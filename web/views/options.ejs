@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="60">
+  <title>Options Trading — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+  <style>
+    .opt-stat-bar { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+    .opt-stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.4rem; min-width: 130px; }
+    .opt-stat-label { font-size: 0.70rem; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .opt-stat-value { font-family: 'Space Mono', monospace; font-size: 1.2rem; font-weight: 700; }
+    .opt-stat-value.pos { color: #00d4a0; }
+    .opt-stat-value.neg { color: #ff4f4f; }
+    .opt-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .opt-table th { text-align: left; padding: 8px 12px; color: var(--text2); font-weight: 600; font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
+    .opt-table td { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    tr.row-profit td { color: #00d4a0; }
+    tr.row-loss td { color: #ff4f4f; }
+    tr.row-pending td { color: #f5a623; }
+    .badge { display:inline-block; font-size:0.63rem; padding:2px 7px; border-radius:4px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; }
+    .b-bps   { background:rgba(100,180,255,0.12); color:#64b4ff; }
+    .b-ic    { background:rgba(200,130,255,0.12); color:#c882ff; }
+    .b-open  { background:rgba(0,212,160,0.12);  color:#00d4a0; }
+    .b-pend  { background:rgba(245,166,35,0.15); color:#f5a623; }
+    .b-closed{ background:rgba(255,255,255,0.06);color:var(--text2); }
+    .b-traded{ background:rgba(0,212,160,0.15);  color:#00d4a0; }
+    .sect-hdr { font-size:0.82rem; font-weight:700; color:var(--accent); margin:0 0 0.75rem; text-transform:uppercase; letter-spacing:0.07em; }
+    .offline-bar { background:rgba(255,79,79,0.08); border:1px solid rgba(255,79,79,0.25); border-radius:8px; padding:0.7rem 1rem; font-size:0.82rem; color:#ff4f4f; margin-bottom:1.25rem; }
+    details summary { cursor:pointer; color:var(--text2); font-size:0.82rem; padding:4px 0; user-select:none; }
+    details summary:hover { color:var(--text); }
+    details[open] summary { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <%
+  function money(n) {
+    if (n == null) return '—';
+    const v = parseFloat(n);
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+  function pclass(n) { return n == null ? '' : parseFloat(n) >= 0 ? 'pos' : 'neg'; }
+  function stratBadge(s) {
+    return s === 'bull_put_spread'
+      ? '<span class="badge b-bps">BPS</span>'
+      : '<span class="badge b-ic">IC</span>';
+  }
+  function strikes(t) {
+    let s = t.short_put_strike + '/' + t.long_put_strike;
+    if (t.short_call_strike) s += ' · ' + t.short_call_strike + '/' + t.long_call_strike;
+    return s;
+  }
+  function dte(expStr) {
+    return Math.max(0, Math.round((new Date(expStr) - new Date()) / 86400000));
+  }
+  %>
+
+  <div id="vanta-bg"></div>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger active">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options" class="active">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <div class="container" style="padding-top: 2rem;">
+
+    <div class="page-header">
+      <h2>Options Trading</h2>
+    </div>
+
+    <% if (!botOnline) { %>
+    <div class="offline-bar">Bot offline — start the Python bot to populate data.</div>
+    <% } %>
+
+    <!-- Account Summary -->
+    <div class="opt-stat-bar">
+      <div class="opt-stat">
+        <div class="opt-stat-label">Net Liq</div>
+        <div class="opt-stat-value <%= accountSnap ? pclass(accountSnap.net_liq) : '' %>">
+          <%= accountSnap ? money(accountSnap.net_liq) : '—' %>
+        </div>
+      </div>
+      <div class="opt-stat">
+        <div class="opt-stat-label">Cash</div>
+        <div class="opt-stat-value <%= accountSnap ? pclass(accountSnap.cash) : '' %>">
+          <%= accountSnap ? money(accountSnap.cash) : '—' %>
+        </div>
+      </div>
+      <div class="opt-stat">
+        <div class="opt-stat-label">Open P&amp;L</div>
+        <div class="opt-stat-value <%= accountSnap ? pclass(accountSnap.open_pnl) : '' %>">
+          <%= accountSnap ? money(accountSnap.open_pnl) : '—' %>
+        </div>
+      </div>
+      <div class="opt-stat">
+        <div class="opt-stat-label">Realized Today</div>
+        <div class="opt-stat-value <%= accountSnap ? pclass(accountSnap.realized_pnl_today) : '' %>">
+          <%= accountSnap ? money(accountSnap.realized_pnl_today) : '—' %>
+        </div>
+      </div>
+    </div>
+
+    <!-- Open Positions -->
+    <div class="card" style="margin-bottom: 1.25rem;">
+      <p class="sect-hdr">Open Positions</p>
+      <% if (openTrades && openTrades.length > 0) { %>
+      <div style="overflow-x: auto;">
+        <table class="opt-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Strategy</th>
+              <th>Strikes</th>
+              <th>Expiration</th>
+              <th>DTE</th>
+              <th>Entry Credit</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% for (const t of openTrades) { %>
+            <tr class="<%= t.status === 'pending' ? 'row-pending' : '' %>">
+              <td><%= t.underlying %></td>
+              <td><%- stratBadge(t.strategy) %></td>
+              <td><%= strikes(t) %></td>
+              <td><%= t.expiration %></td>
+              <td><%= dte(t.expiration) %></td>
+              <td><%= money(t.entry_credit) %></td>
+              <td>
+                <% if (t.status === 'pending') { %>
+                  <span class="badge b-pend">Pending</span>
+                <% } else { %>
+                  <span class="badge b-open">Open</span>
+                <% } %>
+              </td>
+            </tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+      <% } else { %>
+      <p style="color: var(--text2); font-size: 0.82rem; padding: 0.5rem 0;">No open positions.</p>
+      <% } %>
+    </div>
+
+    <!-- Scanner Feed -->
+    <div class="card" style="margin-bottom: 1.25rem;">
+      <p class="sect-hdr">Scanner Feed</p>
+      <% if (recentScans && recentScans.length > 0) { %>
+      <div style="overflow-x: auto;">
+        <table class="opt-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Symbol</th>
+              <th>Strategy</th>
+              <th>Strikes</th>
+              <th>Credit</th>
+              <th>IV Rank</th>
+              <th>Delta</th>
+              <th>DTE</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% const feedScans = recentScans.slice(0, 20).slice().reverse ? recentScans.slice(0, 20) : recentScans; %>
+            <% for (const s of feedScans) { %>
+            <tr>
+              <td style="color: var(--text2); font-family: 'Space Mono', monospace; font-size: 0.75rem;"><%= s.ts ? new Date(s.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—' %></td>
+              <td><%= s.underlying %></td>
+              <td><%- stratBadge(s.strategy) %></td>
+              <td><%= strikes(s) %></td>
+              <td><%= money(s.credit) %></td>
+              <td><%= s.iv_rank != null ? s.iv_rank + '%' : '—' %></td>
+              <td><%= s.delta != null ? s.delta : '—' %></td>
+              <td><%= s.expiration ? dte(s.expiration) : '—' %></td>
+              <td><% if (s.traded == 1) { %><span class="badge b-traded">Traded</span><% } %></td>
+            </tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+      <% } else { %>
+      <p style="color: var(--text2); font-size: 0.82rem; padding: 0.5rem 0;">No scans yet.</p>
+      <% } %>
+    </div>
+
+    <!-- Trade History -->
+    <div class="card" style="margin-bottom: 1.25rem;">
+      <details>
+        <summary><span class="sect-hdr" style="display:inline;">Trade History</span> &nbsp;<span style="font-size:0.75rem; color:var(--text2);">(<%= closedTrades ? closedTrades.length : 0 %> closed)</span></summary>
+        <div style="margin-top: 1rem;">
+          <% if (closedTrades && closedTrades.length > 0) { %>
+          <div style="overflow-x: auto;">
+            <table class="opt-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Strategy</th>
+                  <th>Strikes</th>
+                  <th>Expiration</th>
+                  <th>Entry</th>
+                  <th>Close</th>
+                  <th>P&amp;L</th>
+                  <th>Reason</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                <% const sorted = closedTrades.slice().reverse(); %>
+                <% for (const t of sorted) { %>
+                <%
+                  const pnl = ((parseFloat(t.entry_credit) || 0) - (parseFloat(t.close_credit) || 0)) * (parseInt(t.contracts) || 1) * 100;
+                %>
+                <tr class="<%= pnl >= 0 ? 'row-profit' : 'row-loss' %>">
+                  <td><%= t.underlying %></td>
+                  <td><%- stratBadge(t.strategy) %></td>
+                  <td><%= strikes(t) %></td>
+                  <td><%= t.expiration %></td>
+                  <td><%= money(t.entry_credit) %></td>
+                  <td><%= money(t.close_credit) %></td>
+                  <td style="font-family:'Space Mono',monospace;font-weight:700;"><%= pnl >= 0 ? '+' : '' %><%= money(pnl) %></td>
+                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_reason || '—' %></td>
+                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_ts ? new Date(t.close_ts).toLocaleDateString() : '—' %></td>
+                </tr>
+                <% } %>
+              </tbody>
+            </table>
+          </div>
+          <% } else { %>
+          <p style="color: var(--text2); font-size: 0.82rem; padding: 0.5rem 0;">No closed trades yet.</p>
+          <% } %>
+        </div>
+      </details>
+    </div>
+
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.net.min.js"></script>
+  <script>
+    if (typeof VANTA !== 'undefined') {
+      VANTA.NET({
+        el: '#vanta-bg',
+        mouseControls: true,
+        touchControls: false,
+        gyroControls: false,
+        color: 0x00ffcc,
+        backgroundColor: 0x020509,
+        points: 16.0,
+        maxDistance: 22.0,
+        spacing: 12.0,
+        showDots: true,
+      });
+    }
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>
