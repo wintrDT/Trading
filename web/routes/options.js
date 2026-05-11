@@ -22,6 +22,7 @@ router.get('/', requireAuth, (req, res) => {
   let closedTrades = [];
   let recentScans = [];
   let accountSnap = null;
+  let allTimePnl = null;
   let botOnline = false;
 
   if (db) {
@@ -38,6 +39,12 @@ router.get('/', requireAuth, (req, res) => {
       accountSnap = db.prepare(
         "SELECT * FROM account_snapshots ORDER BY id DESC LIMIT 1"
       ).get() || null;
+      const allClosedTrades = db.prepare(
+        "SELECT entry_credit, close_credit, contracts FROM trades WHERE status='closed' AND close_credit IS NOT NULL"
+      ).all();
+      allTimePnl = allClosedTrades.reduce((sum, t) => {
+        return sum + (parseFloat(t.entry_credit) - parseFloat(t.close_credit)) * t.contracts * 100;
+      }, 0);
       botOnline = true;
     } catch (err) {
       console.error('[options] DB query error:', err.message);
@@ -53,6 +60,7 @@ router.get('/', requireAuth, (req, res) => {
     recentScans,
     accountSnap,
     botOnline,
+    allTimePnl: botOnline ? allTimePnl : null,
   });
 });
 

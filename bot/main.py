@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from datetime import time as _Time
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -19,8 +20,18 @@ log = logging.getLogger(__name__)
 
 ET = pytz.timezone(config.TIMEZONE)
 
+# Run as: python -m bot.main  (from the Kalshi-Bot project root)
+# Required env vars: TT_SECRET, TT_REFRESH, TT_ACCOUNT (see bot/config.py)
+
+
+def _is_market_hours():
+    now = datetime.now(ET)
+    return _Time(9, 45) <= now.time() <= _Time(15, 45)
+
 
 def job_scan(client):
+    if not _is_market_hours():
+        return
     log.info('Scanner starting')
     try:
         balance = client.get_account_balance()
@@ -45,6 +56,8 @@ def job_scan(client):
 
 
 def job_manage(client):
+    if not _is_market_hours():
+        return
     log.info('Manager starting')
     try:
         manage_positions(client, config.DB_PATH)

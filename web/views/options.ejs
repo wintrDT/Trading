@@ -129,6 +129,12 @@
           <%= accountSnap ? money(accountSnap.realized_pnl_today) : '—' %>
         </div>
       </div>
+      <div class="opt-stat">
+        <div class="opt-stat-label">All-time P&amp;L</div>
+        <div class="opt-stat-value <%= allTimePnl != null ? pclass(allTimePnl) : '' %>">
+          <%= allTimePnl != null ? money(allTimePnl) : '—' %>
+        </div>
+      </div>
     </div>
 
     <!-- Open Positions -->
@@ -238,7 +244,7 @@
                 </tr>
               </thead>
               <tbody>
-                <% const sorted = closedTrades.slice().reverse(); %>
+                <% const sorted = closedTrades; %>
                 <% for (const t of sorted) { %>
                 <%
                   const pnl = ((parseFloat(t.entry_credit) || 0) - (parseFloat(t.close_credit) || 0)) * (parseInt(t.contracts) || 1) * 100;
