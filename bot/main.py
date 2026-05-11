@@ -18,14 +18,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 ET = pytz.timezone(config.TIMEZONE)
-client = TastytradeClient(
-    config.TASTYTRADE_PROVIDER_SECRET,
-    config.TASTYTRADE_REFRESH_TOKEN,
-    config.TASTYTRADE_ACCOUNT_NUMBER,
-)
 
 
-def job_scan():
+def job_scan(client):
     log.info('Scanner starting')
     try:
         balance = client.get_account_balance()
@@ -38,14 +33,18 @@ def job_scan():
                     'ts': datetime.now(ET).isoformat(),
                     'traded': 0,
                 })
-                log.info('Setup: %s %s exp %s credit $%.2f',
+                log.info('Setup: %s %s exp %s credit $%.2f/share',
                          setup['strategy'], symbol, setup['expiration'], setup['credit'])
-                place_spread(client, config.DB_PATH, setup, scan_id, net_liq)
+                trade_id = place_spread(client, config.DB_PATH, setup, scan_id, net_liq)
+                if trade_id is not None:
+                    log.info('Trade placed: id=%s %s %s', trade_id, setup['strategy'], symbol)
+                else:
+                    log.info('Trade skipped: %s %s (already open or sizing=0)', setup['strategy'], symbol)
     except Exception:
         log.exception('Scanner error')
 
 
-def job_manage():
+def job_manage(client):
     log.info('Manager starting')
     try:
         manage_positions(client, config.DB_PATH)
@@ -53,7 +52,7 @@ def job_manage():
         log.exception('Manager error')
 
 
-def job_snapshot():
+def job_snapshot(client):
     log.info('Account snapshot')
     try:
         balance = client.get_account_balance()
@@ -70,32 +69,51 @@ def job_snapshot():
 
 def main():
     init_db(config.DB_PATH)
+    client = TastytradeClient(
+        config.TASTYTRADE_PROVIDER_SECRET,
+        config.TASTYTRADE_REFRESH_TOKEN,
+        config.TASTYTRADE_ACCOUNT_NUMBER,
+    )
     client.connect()
     log.info('Connected to Tastytrade — account %s', config.TASTYTRADE_ACCOUNT_NUMBER)
+
+    def _job_scan():
+        job_scan(client)
+
+    def _job_manage():
+        job_manage(client)
+
+    def _job_snapshot():
+        job_snapshot(client)
 
     scheduler = BlockingScheduler(timezone=ET)
 
     # Scan every 15 min during market hours (9:45–15:45 ET)
     scheduler.add_job(
-        job_scan,
+        _job_scan,
         CronTrigger(day_of_week='mon-fri', hour='9-15', minute='*/15', second=0, timezone=ET),
         id='scanner',
     )
-    # Manage positions every 5 min
+    # Manage positions every 5 min, capped at :45 to stay within market hours
     scheduler.add_job(
-        job_manage,
-        CronTrigger(day_of_week='mon-fri', hour='9-15', minute='*/5', second=30, timezone=ET),
+        _job_manage,
+        CronTrigger(day_of_week='mon-fri', hour='9-15', minute='0-45/5', second=30, timezone=ET),
         id='manager',
     )
     # Hourly account snapshot
     scheduler.add_job(
-        job_snapshot,
+        _job_snapshot,
         CronTrigger(day_of_week='mon-fri', hour='10-15', minute=0, second=0, timezone=ET),
         id='snapshot',
     )
 
     log.info('Scheduler running. Ctrl+C to stop.')
-    scheduler.start()
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        log.info('Shutting down.')
+    finally:
+        scheduler.shutdown(wait=True)
 
 
 if __name__ == '__main__':
