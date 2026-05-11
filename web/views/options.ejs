@@ -45,9 +45,10 @@
   }
   function pclass(n) { return n == null ? '' : parseFloat(n) >= 0 ? 'pos' : 'neg'; }
   function stratBadge(s) {
-    return s === 'bull_put_spread'
-      ? '<span class="badge b-bps">BPS</span>'
-      : '<span class="badge b-ic">IC</span>';
+    if (s === 'bull_put_spread') return '<span class="badge b-bps">BPS</span>';
+    if (s === 'iron_condor')     return '<span class="badge b-ic">IC</span>';
+    const safe = (s || '?').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'})[c]);
+    return '<span class="badge b-closed">' + safe + '</span>';
   }
   function strikes(t) {
     let s = t.short_put_strike + '/' + t.long_put_strike;
@@ -55,7 +56,12 @@
     return s;
   }
   function dte(expStr) {
-    return Math.max(0, Math.round((new Date(expStr) - new Date()) / 86400000));
+    if (!expStr) return '—';
+    const [y, m, d] = expStr.split('-').map(Number);
+    const exp = new Date(y, m - 1, d);
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    return Math.max(0, Math.round((exp - now) / 86400000));
   }
   %>
 
@@ -188,7 +194,7 @@
             </tr>
           </thead>
           <tbody>
-            <% const feedScans = recentScans.slice(0, 20).slice().reverse ? recentScans.slice(0, 20) : recentScans; %>
+            <% const feedScans = recentScans; %>
             <% for (const s of feedScans) { %>
             <tr>
               <td style="color: var(--text2); font-family: 'Space Mono', monospace; font-size: 0.75rem;"><%= s.ts ? new Date(s.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—' %></td>
