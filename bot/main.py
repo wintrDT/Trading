@@ -39,7 +39,7 @@ def job_scan(client):
                 if trade_id is not None:
                     log.info('Trade placed: id=%s %s %s', trade_id, setup['strategy'], symbol)
                 else:
-                    log.info('Trade skipped: %s %s (already open or sizing=0)', setup['strategy'], symbol)
+                    log.info('Trade not opened: %s %s', setup['strategy'], symbol)
     except Exception:
         log.exception('Scanner error')
 
@@ -74,7 +74,11 @@ def main():
         config.TASTYTRADE_REFRESH_TOKEN,
         config.TASTYTRADE_ACCOUNT_NUMBER,
     )
-    client.connect()
+    try:
+        client.connect()
+    except Exception:
+        log.exception('Failed to connect to Tastytrade — exiting')
+        return
     log.info('Connected to Tastytrade — account %s', config.TASTYTRADE_ACCOUNT_NUMBER)
 
     def _job_scan():
@@ -88,10 +92,10 @@ def main():
 
     scheduler = BlockingScheduler(timezone=ET)
 
-    # Scan every 15 min during market hours (9:45–15:45 ET)
+    # Scan every 15 min during market hours (9:00–15:30 ET, last scan at 15:30)
     scheduler.add_job(
         _job_scan,
-        CronTrigger(day_of_week='mon-fri', hour='9-15', minute='*/15', second=0, timezone=ET),
+        CronTrigger(day_of_week='mon-fri', hour='9-15', minute='0,15,30', second=0, timezone=ET),
         id='scanner',
     )
     # Manage positions every 5 min, capped at :45 to stay within market hours
