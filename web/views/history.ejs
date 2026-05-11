@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pick History — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger active">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history" class="active">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Pick History</h2>
+      <span class="date-label"><%= picks.length %> picks total</span>
+    </div>
+
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="history-filters">
+        <input type="text" id="searchInput" class="gen-input" placeholder="Search teams, tickers…" oninput="filterPicks()">
+        <select id="tierFilter" class="gen-input" style="max-width:160px" onchange="filterPicks()">
+          <option value="">All Tiers</option>
+          <option value="safe">Safe</option>
+          <option value="medium">Medium</option>
+          <option value="high">High Risk</option>
+        </select>
+        <select id="resultFilter" class="gen-input" style="max-width:160px" onchange="filterPicks()">
+          <option value="">All Results</option>
+          <option value="win">Won</option>
+          <option value="loss">Lost</option>
+          <option value="pending">Pending</option>
+        </select>
+      </div>
+      <div id="filterStats" style="margin-top:0.75rem;font-size:12px;color:var(--text2)"></div>
+    </div>
+
+    <div id="picksList"></div>
+  </main>
+
+  <script>
+    const ALL_PICKS = <%- JSON.stringify(picks) %>;
+
+    function filterPicks() {
+      const search = document.getElementById('searchInput').value.toLowerCase();
+      const tier   = document.getElementById('tierFilter').value.toLowerCase();
+      const result = document.getElementById('resultFilter').value;
+
+      const filtered = ALL_PICKS.filter(p => {
+        if (tier && !(p.tier || '').toLowerCase().includes(tier)) return false;
+        if (result === 'pending' && p.result !== null) return false;
+        if (result && result !== 'pending' && p.result !== result) return false;
+        if (search) {
+          const text = [p.tier, p.date, ...p.legs.map(l => (l.title || '') + ' ' + (l.ticker || ''))].join(' ').toLowerCase();
+          if (!text.includes(search)) return false;
+        }
+        return true;
+      });
+
+      renderPicks(filtered);
+    }
+
+    function renderPicks(picks) {
+      const list  = document.getElementById('picksList');
+      const stats = document.getElementById('filterStats');
+
+      const resolved = picks.filter(p => p.result !== null);
+      const wins     = resolved.filter(p => p.result === 'win').length;
+      const losses   = resolved.filter(p => p.result === 'loss').length;
+      const profit   = resolved.reduce((s, p) =>
+        p.result === 'win' ? s + parseFloat(p.totalPayout) - parseFloat(p.totalCost) : s - parseFloat(p.totalCost), 0);
+
+      stats.innerHTML = picks.length + ' picks shown · ' +
+        (resolved.length > 0 ? wins + 'W / ' + losses + 'L · ' + (profit >= 0 ? '+' : '') + '$' + Math.abs(profit).toFixed(2) : 'No resolved picks in view');
+
+      if (picks.length === 0) {
+        list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔍</div><p>No picks match your filters.</p></div>';
+        return;
+      }
+
+      list.innerHTML = picks.map(p => {
+        const tc = (p.tier || '').toLowerCase().includes('safe') ? 'safe'
+          : (p.tier || '').toLowerCase().includes('medium') ? 'medium' : 'high';
+        const pct = (parseFloat(p.combinedProb) < 1 ? p.combinedProb * 100 : parseFloat(p.combinedProb)).toFixed(1);
+        const rc  = p.result === 'win' ? 'win' : p.result === 'loss' ? 'loss' : '';
+
+        let statusText = '⏳ Pending';
+        let statusClass = 'pending';
+        if (p.result === 'win') {
+          statusText  = '✅ Won +$' + (parseFloat(p.totalPayout) - parseFloat(p.totalCost)).toFixed(2);
+          statusClass = 'win';
+        } else if (p.result === 'loss') {
+          statusText  = '❌ Lost -$' + parseFloat(p.totalCost).toFixed(2);
+          statusClass = 'loss';
+        }
+
+        const resultBtns = !p.result ? `
+          <div class="result-btns">
+            <button class="btn-result win-btn"  onclick="markResult('${p.id}', 'win',  event)">✅ Won</button>
+            <button class="btn-result loss-btn" onclick="markResult('${p.id}', 'loss', event)">❌ Lost</button>
+          </div>` : '';
+
+        return `<div class="pick-card ${rc} fade-in" id="hpick-${p.id}" style="margin-bottom:0.75rem"
+                     data-cost="${p.totalCost}" data-payout="${p.totalPayout}">
+          <div class="pick-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+            <span class="tier-pill ${tc}">${escHtml(p.tier || '')}</span>
+            <span class="pick-status ${statusClass}">${statusText}</span>
+            <span class="pick-combined">${pct}%</span>
+            <span class="muted" style="font-size:11px;flex-shrink:0">${escHtml(p.date || '')}</span>
+            <span class="pick-expand-icon">▾</span>
+          </div>
+          <div class="pick-body">
+            <div class="pick-financials">
+              <div class="fin-item"><span class="fin-label">Cost</span><span class="fin-value">$${p.totalCost}</span></div>
+              <div class="fin-item"><span class="fin-label">Payout</span><span class="fin-value">$${parseFloat(p.totalPayout).toFixed(2)}</span></div>
+              <div class="fin-item"><span class="fin-label">ROI</span><span class="fin-value">${p.roi}%</span></div>
+              <div class="fin-item"><span class="fin-label">Legs</span><span class="fin-value">${p.legs.length}</span></div>
+            </div>
+            <ul class="leg-list">
+              ${p.legs.map(leg => `<li class="leg-item">
+                <span class="leg-side ${leg.side}">${leg.side.toUpperCase()}</span>
+                <span class="leg-title">${escHtml(leg.title || leg.ticker || '')}</span>
+                <div class="leg-bar-wrap">
+                  <div class="leg-bar-bg"><div class="leg-bar-fill" style="width:${leg.sideProb}%"></div></div>
+                  <div class="leg-prob-label">${leg.sideProb}%</div>
+                </div>
+                ${leg.result ? `<span class="leg-result-icon">${leg.result === 'win' ? '✅' : '❌'}</span>` : ''}
+              </li>`).join('')}
+            </ul>
+            ${resultBtns}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function markResult(id, result, event) {
+      event.stopPropagation();
+      const res = await fetch('/picks/' + id + '/result', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ result }),
+      }).catch(() => null);
+      if (!res?.ok) { alert('Failed to update result.'); return; }
+      const data = await res.json();
+      if (data.ok) {
+        const pick = ALL_PICKS.find(p => p.id === id);
+        if (pick) { pick.result = result; pick.resolvedAt = new Date().toISOString(); }
+        filterPicks();
+      }
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    filterPicks();
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>

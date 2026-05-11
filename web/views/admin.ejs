@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <a href="/admin" class="active">Admin</a>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Admin Panel</h2>
+      <% if (stats.pending > 0) { %>
+        <span class="badge badge-warn"><%= stats.pending %> pending approval</span>
+      <% } %>
+    </div>
+
+    <% if (flash) { %>
+      <div class="alert alert-info" style="margin-bottom:1.25rem"><%= flash %></div>
+    <% } %>
+    <% if (error) { %>
+      <div class="alert alert-error" style="margin-bottom:1.25rem"><%= error %></div>
+    <% } %>
+
+    <!-- Stats -->
+    <div class="stat-grid" style="margin-bottom:1.5rem">
+      <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-label">Total Users</div>
+        <div class="stat-value"><%= stats.total %></div>
+        <div class="stat-sub"><%= stats.approved %> approved</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-label">Pending</div>
+        <div class="stat-value <%= stats.pending > 0 ? 'yellow' : '' %>"><%= stats.pending %></div>
+        <div class="stat-sub">awaiting approval</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🔑</div>
+        <div class="stat-label">Kalshi Connected</div>
+        <div class="stat-value green"><%= stats.connected %></div>
+        <div class="stat-sub">of <%= stats.total %> users</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🚫</div>
+        <div class="stat-label">Not Connected</div>
+        <div class="stat-value <%= (stats.total - stats.connected) > 0 ? 'red' : '' %>"><%= stats.total - stats.connected %></div>
+        <div class="stat-sub">no Kalshi creds</div>
+      </div>
+    </div>
+
+    <!-- Pending approvals first (highlighted) -->
+    <% const pendingUsers = users.filter(u => u.status === 'pending'); %>
+    <% if (pendingUsers.length > 0) { %>
+    <div class="card" style="margin-bottom:1.25rem;border-color:rgba(245,166,35,0.4)">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">⏳</span> Pending Approval</div>
+        <span style="font-size:12px;color:var(--yellow)"><%= pendingUsers.length %> waiting</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <% pendingUsers.forEach(u => { %>
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:rgba(245,166,35,0.06);border-radius:8px;border:1px solid rgba(245,166,35,0.2)">
+          <div style="flex:1">
+            <span style="font-weight:700">@<%= u.username %></span>
+            <span style="font-size:11px;color:var(--text2);margin-left:8px">registered <%= new Date(u.created_at).toLocaleDateString() %></span>
+          </div>
+          <form method="POST" action="/admin/approve/<%= u.id %>" style="display:inline">
+            <button class="btn-sm" style="background:var(--green);color:#000;font-weight:700;border:none">✓ Approve</button>
+          </form>
+          <form method="POST" action="/admin/deny/<%= u.id %>" style="display:inline">
+            <button class="btn-sm btn-danger">✗ Deny</button>
+          </form>
+        </div>
+        <% }) %>
+      </div>
+    </div>
+    <% } %>
+
+    <!-- All users table -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">👥</span> All Users</div>
+        <span style="font-size:12px;color:var(--text2)"><%= users.length %> total</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Kalshi</th>
+              <th>Joined</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% users.forEach(u => { %>
+            <tr>
+              <td>
+                <span style="font-weight:700">@<%= u.username %></span>
+                <% if (u.id === user.id) { %><span style="font-size:10px;color:var(--primary);margin-left:4px">(you)</span><% } %>
+              </td>
+              <td>
+                <span class="role-badge <%= u.role %>"><%= u.role %></span>
+              </td>
+              <td>
+                <span class="status-badge <%= u.status %>"><%= u.status %></span>
+              </td>
+              <td>
+                <% if (u.has_kalshi) { %>
+                  <span style="color:var(--green);font-size:12px;font-weight:700">✅ Connected</span>
+                  <% if (u.kalshi_email) { %>
+                    <div style="font-size:10px;color:var(--text2)"><%= u.kalshi_email %></div>
+                  <% } %>
+                <% } else { %>
+                  <span style="color:var(--muted);font-size:12px">— Not set</span>
+                <% } %>
+              </td>
+              <td style="font-size:12px;color:var(--text2)"><%= new Date(u.created_at).toLocaleDateString() %></td>
+              <td>
+                <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                  <% if (u.status === 'pending') { %>
+                    <form method="POST" action="/admin/approve/<%= u.id %>" style="display:inline">
+                      <button class="btn-sm" style="font-size:10px;background:rgba(35,209,139,0.15);color:var(--green);border-color:rgba(35,209,139,0.3)">Approve</button>
+                    </form>
+                    <form method="POST" action="/admin/deny/<%= u.id %>" style="display:inline">
+                      <button class="btn-sm btn-danger" style="font-size:10px">Deny</button>
+                    </form>
+                  <% } %>
+                  <% if (u.status === 'denied') { %>
+                    <form method="POST" action="/admin/approve/<%= u.id %>" style="display:inline">
+                      <button class="btn-sm" style="font-size:10px">Restore</button>
+                    </form>
+                  <% } %>
+                  <% if (u.id !== user.id) { %>
+                    <% if (u.role !== 'admin') { %>
+                      <form method="POST" action="/admin/promote/<%= u.id %>" style="display:inline"
+                            onsubmit="return confirm('Promote @<%= u.username %> to admin?')">
+                        <button class="btn-sm" style="font-size:10px">↑ Admin</button>
+                      </form>
+                    <% } else { %>
+                      <form method="POST" action="/admin/demote/<%= u.id %>" style="display:inline"
+                            onsubmit="return confirm('Remove admin from @<%= u.username %>?')">
+                        <button class="btn-sm" style="font-size:10px">↓ Demote</button>
+                      </form>
+                    <% } %>
+                    <button class="btn-sm" style="font-size:10px"
+                            onclick="showResetModal(<%= u.id %>, '<%= u.username %>')">🔑 Reset PW</button>
+                    <form method="POST" action="/admin/delete/<%= u.id %>" style="display:inline"
+                          onsubmit="return confirm('Delete @<%= u.username %>? Cannot be undone.')">
+                      <button class="btn-sm btn-danger" style="font-size:10px">Delete</button>
+                    </form>
+                  <% } %>
+                </div>
+              </td>
+            </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Create user -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">➕</span> Create User</div>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">Create an account directly — they'll be approved immediately without waiting.</p>
+      <form method="POST" action="/admin/create">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:var(--text2)">Username</label>
+            <input type="text" name="username" class="gen-input" placeholder="username" required minlength="3" style="width:160px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:var(--text2)">Password</label>
+            <input type="password" name="password" class="gen-input" placeholder="min 6 chars" required minlength="6" style="width:160px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:var(--text2)">Role</label>
+            <select name="role" class="gen-input" style="width:110px">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <button type="submit" class="btn-sm" style="padding:9px 18px;font-size:13px">Create</button>
+        </div>
+      </form>
+    </div>
+  </main>
+
+  <!-- Reset password modal -->
+  <div id="resetModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:999;display:none;align-items:center;justify-content:center">
+    <div style="background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:1.5rem;width:340px;max-width:90vw">
+      <h3 style="margin-bottom:1rem;font-size:16px">Reset Password</h3>
+      <p id="resetModalLabel" style="font-size:13px;color:var(--text2);margin-bottom:1rem"></p>
+      <form method="POST" id="resetForm">
+        <input type="password" name="new_password" class="gen-input" style="width:100%;margin-bottom:10px"
+               placeholder="New password (min 6 chars)" minlength="6" required>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" class="btn-sm" onclick="hideResetModal()">Cancel</button>
+          <button type="submit" class="btn-sm" style="background:var(--primary);color:#000;border:none;font-weight:700">Reset</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    function showResetModal(userId, username) {
+      document.getElementById('resetModalLabel').textContent = 'Set a new password for @' + username;
+      document.getElementById('resetForm').action = '/admin/reset-password/' + userId;
+      const modal = document.getElementById('resetModal');
+      modal.style.display = 'flex';
+      modal.querySelector('input').value = '';
+      modal.querySelector('input').focus();
+    }
+    function hideResetModal() {
+      document.getElementById('resetModal').style.display = 'none';
+    }
+    // Close on backdrop click
+    document.getElementById('resetModal').addEventListener('click', function(e) {
+      if (e.target === this) hideResetModal();
+    });
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>

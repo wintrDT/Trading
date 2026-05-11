@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings" class="active">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container" style="max-width:660px">
+    <div class="page-header">
+      <h2>Settings</h2>
+    </div>
+
+    <% if (saved) { %>
+      <div class="alert alert-info" style="margin-bottom:1.25rem">Credentials saved successfully.</div>
+    <% } %>
+    <% if (error) { %>
+      <div class="alert alert-error" style="margin-bottom:1.25rem"><%= error %></div>
+    <% } %>
+
+    <!-- Status banner -->
+    <div class="card" style="margin-bottom:1.25rem;padding:1rem 1.25rem">
+      <div style="display:flex;align-items:center;gap:12px">
+        <% if (hasApiKey) { %>
+          <span style="font-size:22px">🔑</span>
+          <div>
+            <div style="font-weight:700;font-size:14px">API Key connected</div>
+            <div style="font-size:12px;color:var(--text2)">Using API key auth — works with Google, Apple, or any Kalshi account</div>
+          </div>
+          <span style="margin-left:auto;color:var(--green);font-size:13px;font-weight:700">✅ Ready</span>
+        <% } else if (hasPassword) { %>
+          <span style="font-size:22px">🔐</span>
+          <div>
+            <div style="font-weight:700;font-size:14px">Email + Password connected</div>
+            <div style="font-size:12px;color:var(--text2)">Logged in as <%= kalshiEmail || '(email saved)' %></div>
+          </div>
+          <span style="margin-left:auto;color:var(--green);font-size:13px;font-weight:700">✅ Ready</span>
+        <% } else { %>
+          <span style="font-size:22px">⚠️</span>
+          <div>
+            <div style="font-weight:700;font-size:14px">No Kalshi credentials</div>
+            <div style="font-size:12px;color:var(--text2)">Add your API key or email+password below to enable trading</div>
+          </div>
+          <span style="margin-left:auto;color:var(--yellow);font-size:13px;font-weight:700">Not set</span>
+        <% } %>
+      </div>
+    </div>
+
+    <!-- Option 1: API Key (recommended for Google users) -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">🔑</span> API Key <span style="font-size:11px;color:var(--primary);background:rgba(0,212,160,0.1);padding:2px 8px;border-radius:4px;margin-left:6px">Recommended</span></div>
+        <% if (hasApiKey) { %><span style="font-size:12px;color:var(--green)">✅ Saved</span><% } %>
+      </div>
+
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.6">
+        Works for <strong>all Kalshi accounts</strong> including Google and Apple login. Get your key at
+        <strong>kalshi.com → Account → API</strong> (or Settings → Developer).
+      </p>
+
+      <form method="POST" action="/settings/apikey">
+        <div style="display:flex;gap:8px">
+          <input type="text" name="kalshi_api_key" id="apiKeyInput" class="gen-input" style="flex:1;font-size:13px"
+                 placeholder="<%= hasApiKey ? '●●●●●●●● (key saved — paste new to replace)' : 'Paste your Kalshi API key here' %>"
+                 autocomplete="off">
+          <button type="submit" class="btn-sm" style="font-size:12px;padding:8px 14px;white-space:nowrap">Save Key</button>
+          <button type="button" class="btn-sm" onclick="testApiKey()" style="font-size:12px;padding:8px 14px;white-space:nowrap">Test</button>
+        </div>
+        <div id="apiKeyResult" style="font-size:12px;margin-top:6px;min-height:18px"></div>
+      </form>
+    </div>
+
+    <!-- Option 2: Email + Password -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📧</span> Email + Password</div>
+        <% if (hasPassword) { %><span style="font-size:12px;color:var(--green)">✅ Saved</span><% } %>
+      </div>
+
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.6">
+        Use your Kalshi email and password. <strong>Not available if you signed up with Google</strong> — use the API key instead,
+        or set a password at <strong>kalshi.com → Account → Security</strong>.
+      </p>
+
+      <form method="POST" action="/settings/password">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <input type="email" name="kalshi_email" class="gen-input" style="width:100%"
+                 value="<%= kalshiEmail %>" placeholder="your@email.com" autocomplete="email">
+
+          <input type="password" name="kalshi_password" id="pwInput" class="gen-input" style="width:100%"
+                 placeholder="<%= hasPassword ? '●●●●●●●● (saved — enter new to change)' : 'Kalshi password' %>"
+                 autocomplete="new-password">
+
+          <input type="password" name="kalshi_password_confirm" class="gen-input" style="width:100%"
+                 placeholder="Confirm password" autocomplete="new-password">
+
+          <div style="display:flex;gap:8px">
+            <button type="submit" class="btn-sm" style="font-size:12px;padding:8px 14px">Save Password</button>
+            <button type="button" class="btn-sm" onclick="testPassword()" style="font-size:12px;padding:8px 14px">Test Login</button>
+          </div>
+          <div id="pwResult" style="font-size:12px;min-height:18px"></div>
+        </div>
+      </form>
+    </div>
+
+    <!-- Clear -->
+    <% if (hasApiKey || hasPassword) { %>
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">🗑️</span> Remove Credentials</div>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem">Clears all saved Kalshi credentials from your account.</p>
+      <form method="POST" action="/settings/clear" onsubmit="return confirm('Remove all saved Kalshi credentials?')">
+        <button type="submit" class="btn-sm btn-danger" style="font-size:12px">Remove All Credentials</button>
+      </form>
+    </div>
+    <% } %>
+
+    <!-- How it works -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">ℹ️</span> How to get your API key</div>
+      </div>
+      <ol style="font-size:13px;color:var(--text2);line-height:2.2;padding-left:1.25rem">
+        <li>Go to <strong>kalshi.com</strong> and log in</li>
+        <li>Click your profile → <strong>Settings</strong> → <strong>API</strong> (or Developer)</li>
+        <li>Click <strong>Create API Key</strong></li>
+        <li>Copy the key and paste it above</li>
+      </ol>
+      <p style="font-size:12px;color:var(--muted);margin-top:0.75rem">
+        Your credentials are encrypted with AES-256 before storage. No one else can see or use them.
+      </p>
+    </div>
+  </main>
+
+  <script>
+    async function testApiKey() {
+      const key    = document.getElementById('apiKeyInput').value.trim();
+      const result = document.getElementById('apiKeyResult');
+      if (!key) { result.innerHTML = '<span style="color:var(--yellow)">Paste your API key first.</span>'; return; }
+
+      result.innerHTML = '<span style="color:var(--text2)">Testing…</span>';
+      try {
+        const res  = await fetch('/settings/test', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: key }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          const bal = data.balance != null ? ` · Balance: $${data.balance}` : '';
+          result.innerHTML = `<span style="color:var(--green)">✅ Connected${bal}</span>`;
+        } else {
+          result.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+        }
+      } catch (e) {
+        result.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+      }
+    }
+
+    async function testPassword() {
+      const email    = document.querySelector('[name="kalshi_email"]').value.trim();
+      const password = document.getElementById('pwInput').value;
+      const result   = document.getElementById('pwResult');
+      if (!email || !password) { result.innerHTML = '<span style="color:var(--yellow)">Enter email and password.</span>'; return; }
+
+      result.innerHTML = '<span style="color:var(--text2)">Testing…</span>';
+      try {
+        const res  = await fetch('/settings/test', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          const bal = data.balance != null ? ` · Balance: $${data.balance}` : '';
+          result.innerHTML = `<span style="color:var(--green)">✅ Login successful${bal}</span>`;
+        } else {
+          result.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+        }
+      } catch (e) {
+        result.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+      }
+    }
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>

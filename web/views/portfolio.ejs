@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Portfolio — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger active">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio" class="active">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Portfolio</h2>
+      <button class="btn-sm" onclick="refreshPage()" id="refreshBtn" style="font-size:11px">↻ Refresh</button>
+    </div>
+
+    <% if (error) { %>
+      <div class="alert alert-error" style="margin-bottom:1.5rem">
+        Kalshi API error: <%= error %> — make sure KALSHI_EMAIL + KALSHI_PASSWORD (or KALSHI_API_KEY) are set in .env
+      </div>
+    <% } %>
+
+    <!-- Stats row -->
+    <div class="stat-grid" style="margin-bottom:1.5rem">
+      <div class="stat-card">
+        <div class="stat-icon">🎯</div>
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value <%= tradeStats.winRate != null && tradeStats.winRate >= 50 ? 'green' : 'red' %>">
+          <%= tradeStats.winRate != null ? tradeStats.winRate + '%' : '—' %>
+        </div>
+        <div class="stat-sub"><%= tradeStats.wins %>W / <%= tradeStats.losses %>L · <%= tradeStats.pending %> pending</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-label">Net P&L (trades)</div>
+        <div class="stat-value <%= tradeStats.netPL >= 0 ? 'green' : 'red' %>">
+          <%= tradeStats.netPL >= 0 ? '+' : '' %>$<%= Math.abs(tradeStats.netPL).toFixed(2) %>
+        </div>
+        <div class="stat-sub"><%= tradeStats.total %> settled · <%= tradeStats.roi != null ? tradeStats.roi + '% ROI' : '—' %></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">💵</div>
+        <div class="stat-label">Available Balance</div>
+        <div class="stat-value <%= balance != null && balance >= 0 ? 'green' : '' %>">
+          <%= balance != null ? '$' + balance.toFixed(2) : '—' %>
+        </div>
+        <div class="stat-sub">cash on Kalshi</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📊</div>
+        <div class="stat-label">Open Positions</div>
+        <div class="stat-value"><%= positions.length %></div>
+        <div class="stat-sub">active contracts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📋</div>
+        <div class="stat-label">Open Orders</div>
+        <div class="stat-value"><%= orders.length %></div>
+        <div class="stat-sub">resting limit orders</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">💹</div>
+        <div class="stat-label">Portfolio Value</div>
+        <%
+          const totalMktValue = positions.reduce((s, p) => s + (p.mktValue || 0), 0);
+          const hasValue = positions.some(p => p.mktValue != null);
+        %>
+        <div class="stat-value <%= hasValue ? 'green' : '' %>">
+          <%= hasValue ? '$' + totalMktValue.toFixed(2) : '—' %>
+        </div>
+        <div class="stat-sub">at current bid prices</div>
+      </div>
+    </div>
+
+    <!-- Positions -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📈</span> Open Positions</div>
+        <span style="font-size:12px;color:var(--text2)"><%= positions.length %> position<%= positions.length !== 1 ? 's' : '' %></span>
+      </div>
+      <% if (positions.length === 0) { %>
+        <div class="empty-state" style="padding:2rem 1rem">
+          <div class="empty-state-icon" style="font-size:28px">📭</div>
+          <p>No open positions.</p>
+        </div>
+      <% } else { %>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Side</th>
+                <th style="text-align:right">Qty</th>
+                <th style="text-align:right">Bid</th>
+                <th style="text-align:right">Ask</th>
+                <th style="text-align:right">Mkt Value</th>
+                <th style="text-align:right">Payout If Win</th>
+                <th>Expires</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% positions.forEach(p => {
+                const payoutIfWin = p.qty;
+                const expiry = p.closeTime ? new Date(p.closeTime).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '—';
+                const bidLbl = p.bidPrice != null ? p.bidPrice + '¢' : '—';
+                const mktLbl = p.mktValue != null ? '$' + p.mktValue.toFixed(2) : '—';
+              %>
+              <tr>
+                <td>
+                  <div style="font-weight:600;font-size:12px;color:var(--text2)"><%= p.ticker %></div>
+                  <div style="font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= p.title %></div>
+                </td>
+                <td>
+                  <span class="leg-side <%= p.side %>" style="font-size:11px;padding:2px 8px"><%= p.side.toUpperCase() %></span>
+                </td>
+                <td style="text-align:right;font-weight:700"><%= p.qty %></td>
+                <td style="text-align:right;color:var(--green)"><%= p.yesBid != null ? p.yesBid + '¢' : '—' %></td>
+                <td style="text-align:right;color:var(--red)"><%= p.yesAsk != null ? p.yesAsk + '¢' : '—' %></td>
+                <td style="text-align:right;color:var(--green);font-weight:700"><%= mktLbl %></td>
+                <td style="text-align:right;color:var(--primary);font-weight:700">$<%= payoutIfWin.toFixed(2) %></td>
+                <td style="font-size:11px;color:var(--text2)"><%= expiry %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
+    </div>
+
+    <!-- Open Orders -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📋</span> Open Orders</div>
+        <span style="font-size:12px;color:var(--text2)"><%= orders.length %> resting order<%= orders.length !== 1 ? 's' : '' %></span>
+      </div>
+      <% if (orders.length === 0) { %>
+        <div class="empty-state" style="padding:2rem 1rem">
+          <div class="empty-state-icon" style="font-size:28px">📭</div>
+          <p>No open limit orders.</p>
+        </div>
+      <% } else { %>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Side</th>
+                <th>Type</th>
+                <th style="text-align:right">Price</th>
+                <th style="text-align:right">Count</th>
+                <th style="text-align:right">Filled</th>
+                <th style="text-align:right">Remaining</th>
+                <th>Placed</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="ordersTbody">
+              <% orders.forEach(o => {
+                const price = o.side === 'yes' ? o.yesPrice : o.noPrice;
+                const placed = o.createdTime ? new Date(o.createdTime).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '—';
+              %>
+              <tr id="order-row-<%= o.orderId %>">
+                <td style="font-size:12px;font-weight:600;color:var(--text2)"><%= o.ticker %></td>
+                <td>
+                  <span class="leg-side <%= o.side %>" style="font-size:11px;padding:2px 8px"><%= o.side.toUpperCase() %></span>
+                </td>
+                <td style="font-size:11px;color:var(--text2);text-transform:uppercase"><%= o.type %></td>
+                <td style="text-align:right"><%= price != null ? price + '¢' : '—' %></td>
+                <td style="text-align:right"><%= o.count %></td>
+                <td style="text-align:right;color:var(--green)"><%= o.filledCount %></td>
+                <td style="text-align:right;font-weight:700"><%= o.remaining %></td>
+                <td style="font-size:11px;color:var(--text2)"><%= placed %></td>
+                <td>
+                  <button class="btn-sm btn-danger" style="font-size:10px;padding:3px 8px"
+                          onclick="cancelOrder('<%= o.orderId %>')">Cancel</button>
+                </td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
+      <div id="cancelStatus" style="margin-top:8px;font-size:12px"></div>
+    </div>
+
+    <!-- Trade History -->
+    <div class="card" style="margin-top:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📜</span> Trade History</div>
+        <span style="font-size:12px;color:var(--text2)">last 30 executed via bot</span>
+      </div>
+      <% if (tradeStats.recent.length === 0) { %>
+        <div class="empty-state" style="padding:2rem 1rem">
+          <div class="empty-state-icon" style="font-size:28px">📭</div>
+          <p>No trades logged yet. Trades placed through Spreads or Quick Bet appear here.</p>
+        </div>
+      <% } else { %>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Side</th>
+                <th style="text-align:right">Qty</th>
+                <th style="text-align:right">Fill Price</th>
+                <th style="text-align:right">Cost</th>
+                <th style="text-align:right">Payout</th>
+                <th>Result</th>
+                <th>Executed</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% tradeStats.recent.forEach(t => {
+                const executed = new Date(t.executedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+                const resultColor = t.result === 'win' ? 'var(--green)' : t.result === 'loss' ? 'var(--red)' : 'var(--text2)';
+                const resultLbl   = t.result === 'win' ? '✅ Win' : t.result === 'loss' ? '❌ Loss' : '⏳ Pending';
+              %>
+              <tr>
+                <td>
+                  <div style="font-weight:600;font-size:11px;color:var(--text2)"><%= t.ticker %></div>
+                  <div style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><%= t.title %></div>
+                </td>
+                <td><span class="leg-side <%= t.side %>" style="font-size:10px;padding:2px 6px"><%= t.side.toUpperCase() %></span></td>
+                <td style="text-align:right"><%= t.count %></td>
+                <td style="text-align:right"><%= t.fillPrice != null ? t.fillPrice + '¢' : '—' %></td>
+                <td style="text-align:right"><%= t.cost != null ? '$' + t.cost.toFixed(2) : '—' %></td>
+                <td style="text-align:right;color:var(--green)"><%= t.payout != null ? '$' + t.payout.toFixed(2) : '—' %></td>
+                <td style="font-weight:700;color:<%= resultColor %>"><%= resultLbl %></td>
+                <td style="font-size:11px;color:var(--text2)"><%= executed %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
+    </div>
+  </main>
+
+  <script>
+    function refreshPage() {
+      const btn = document.getElementById('refreshBtn');
+      btn.textContent = '↻ …';
+      btn.disabled = true;
+      window.location.reload();
+    }
+
+    async function cancelOrder(orderId) {
+      if (!confirm('Cancel this order?')) return;
+      const row = document.getElementById('order-row-' + orderId);
+      const btn = row?.querySelector('button');
+      if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+      try {
+        const res  = await fetch('/portfolio/cancel', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ orderId }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          if (row) row.style.opacity = '0.4';
+          if (btn) { btn.textContent = 'Cancelled'; btn.style.color = 'var(--text2)'; }
+          document.getElementById('cancelStatus').innerHTML =
+            `<span style="color:var(--green)">✅ Order ${orderId} cancelled</span>`;
+        } else {
+          if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
+          document.getElementById('cancelStatus').innerHTML =
+            `<span style="color:var(--red)">❌ ${data.error || 'Cancel failed'}</span>`;
+        }
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
+        document.getElementById('cancelStatus').innerHTML =
+          `<span style="color:var(--red)">❌ Network error: ${e.message}</span>`;
+      }
+    }
+
+    // Auto-refresh every 60s
+    let _countdown = 60;
+    const _timer = setInterval(() => {
+      _countdown--;
+      const btn = document.getElementById('refreshBtn');
+      if (btn && !btn.disabled) btn.textContent = `↻ ${_countdown}s`;
+      if (_countdown <= 0) window.location.reload();
+    }, 1000);
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>

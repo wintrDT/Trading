@@ -1,0 +1,1473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spread Builder — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+  <div id="vanta-bg"></div>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger active">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads" class="active">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Spread Builder</h2>
+      <span class="badge" id="legCount">0 / 30 legs</span>
+    </div>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:1.5rem">
+      Build multi-leg positions across related markets. Search any market, add up to 4 legs, choose YES or NO on each, then execute all at once.
+    </p>
+
+    <% if (!hasKalshiCreds) { %>
+      <div class="alert" style="background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);color:var(--yellow);padding:10px 16px;border-radius:8px;font-size:13px;margin-bottom:1.25rem;display:flex;align-items:center;gap:10px">
+        <span>⚠</span>
+        <span>You haven't added your Kalshi credentials yet — trades won't execute.</span>
+        <a href="/settings" style="margin-left:auto;color:var(--yellow);font-weight:700;white-space:nowrap">Go to Settings →</a>
+      </div>
+    <% } %>
+
+    <div class="spread-layout">
+
+      <!-- LEFT: Market finder -->
+      <div class="card spread-search-panel">
+        <div class="card-header">
+          <div class="card-title"><span class="card-title-icon">🔍</span> Find Markets</div>
+        </div>
+        <input id="spreadSearchInput" class="gen-input" placeholder="BTC, NBA, Celtics, Lebron, Fed rate…" autocomplete="off">
+
+        <!-- Quick search chips -->
+        <div style="display:flex;gap:6px;margin:6px 0 8px;flex-wrap:wrap">
+          <button class="btn-chip" onclick="quickSearch('btc')">₿ BTC</button>
+          <button class="btn-chip" onclick="quickSearch('eth')">Ξ ETH</button>
+          <button class="btn-chip" onclick="quickSearch('doge')">Ð DOGE</button>
+          <button class="btn-chip" onclick="quickSearch('nba')">🏀 NBA</button>
+          <button class="btn-chip" onclick="quickSearch('nfl')">🏈 NFL</button>
+          <button class="btn-chip" onclick="quickSearch('mlb')">⚾ MLB</button>
+        </div>
+
+        <!-- Category filter tabs (shown when results exist) -->
+        <div id="catTabs" style="display:none;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+          <button class="cat-tab active" data-cat="all"          onclick="setCat('all')">All</button>
+          <button class="cat-tab"        data-cat="game"         onclick="setCat('game')">🎮 Games</button>
+          <button class="cat-tab"        data-cat="props"        onclick="setCat('props')">📊 Props</button>
+          <button class="cat-tab"        data-cat="championship" onclick="setCat('championship')">🏆 Championship</button>
+          <button class="cat-tab"        data-cat="total"        onclick="setCat('total')">🔢 Totals</button>
+          <button class="cat-tab"        data-cat="other"        onclick="setCat('other')">Other</button>
+        </div>
+
+        <div id="cryptoSignalCard" style="display:none"></div>
+        <div id="searchStatus" style="font-size:12px;color:var(--text2);min-height:16px;margin:4px 0"></div>
+        <div id="spreadSearchResults"></div>
+
+        <div id="relatedSection" style="display:none;margin-top:0.5rem">
+          <div class="spread-section-label">Related markets in same series</div>
+          <div id="relatedResults"></div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Legs + Summary + Alerts -->
+      <div>
+        <div class="card" style="margin-bottom:1.25rem">
+          <div class="card-header">
+            <div class="card-title"><span class="card-title-icon">📋</span> Legs</div>
+            <button class="btn-sm btn-danger" onclick="clearLegs()" style="font-size:11px">Clear All</button>
+          </div>
+          <div id="legsList">
+            <div class="empty-state" id="legsEmpty" style="padding:2rem 1rem">
+              <div class="empty-state-icon" style="font-size:28px">➕</div>
+              <p>Search for a market and click to add it as a leg.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="spreadSummary" style="display:none">
+          <div class="card-header">
+            <div class="card-title"><span class="card-title-icon">💰</span> Summary</div>
+            <button class="btn-sm" id="copyParlayBtn" onclick="copyParlay()" title="Copy parlay to clipboard" style="font-size:10px">Copy</button>
+          </div>
+
+          <!-- Probability meter -->
+          <div id="probMeterWrap" style="margin-bottom:0.75rem;display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text2)">Win Probability</span>
+              <span id="probMeterLabel" style="font-size:12px;font-weight:700;font-family:'Space Mono',monospace"></span>
+            </div>
+            <div style="height:6px;background:rgba(255,255,255,0.07);border-radius:3px;overflow:hidden">
+              <div id="probMeterBar" style="height:100%;border-radius:3px;transition:width 0.4s ease,background 0.4s ease"></div>
+            </div>
+          </div>
+
+          <div class="pick-financials" id="spreadFinancials"></div>
+
+          <div style="margin:0.75rem 0 0.5rem">
+            <label style="font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text2);display:block;margin-bottom:6px">Wager</label>
+            <!-- Quick preset buttons -->
+            <div style="display:flex;gap:5px;margin-bottom:8px">
+              <button class="wager-preset" onclick="setWager(1)">$1</button>
+              <button class="wager-preset" onclick="setWager(5)">$5</button>
+              <button class="wager-preset" onclick="setWager(10)">$10</button>
+              <button class="wager-preset" onclick="setWager(25)">$25</button>
+              <button class="wager-preset" onclick="setWager(50)">$50</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="position:relative;flex:1">
+                <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text2);font-size:13px">$</span>
+                <input type="number" id="investInput" value="5" min="1" step="1"
+                       class="gen-input" style="padding-left:22px" oninput="recalculate()">
+              </div>
+              <span id="contractsLabel" style="font-size:12px;color:var(--text2);white-space:nowrap"></span>
+            </div>
+          </div>
+          <button class="btn-generate" id="executeBtn" onclick="executeSpread()">
+            <div class="spinner"></div>
+            <span class="btn-label">Execute All Legs on Kalshi</span>
+          </button>
+          <div id="executeStatus" style="margin-top:0.75rem"></div>
+        </div>
+
+        <!-- Price Alerts -->
+        <div class="card" id="alertsCard" style="margin-top:1.25rem">
+          <div class="card-header">
+            <div class="card-title"><span class="card-title-icon">🔔</span> Price Alerts</div>
+            <button class="btn-sm" onclick="requestAlertPermission()" id="alertPermBtn" style="font-size:10px;display:none">Enable Notifications</button>
+          </div>
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <input id="alertTicker" class="gen-input" placeholder="Ticker (e.g. KXBTC-…)" style="flex:1;font-size:12px">
+            <select id="alertDir" class="gen-input" style="width:72px;font-size:12px">
+              <option value="above">above</option>
+              <option value="below">below</option>
+            </select>
+            <input id="alertPrice" class="gen-input" placeholder="¢" type="number" min="1" max="99" style="width:54px;font-size:12px">
+            <button class="btn-sm" onclick="addAlert()" style="font-size:11px;white-space:nowrap">+ Add</button>
+          </div>
+          <div id="alertsList" style="font-size:12px"></div>
+          <div id="alertsStatus" style="font-size:11px;color:var(--text2);margin-top:4px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- P&L Scenarios (full-width, shown once ≥1 leg added) -->
+    <div class="card" id="scenariosCard" style="display:none">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📊</span> P&L Scenarios</div>
+        <span id="scenariosSubtitle" style="font-size:12px;color:var(--text2)"></span>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Legs Win</th>
+            <th>Gross Payout</th>
+            <th>Net P&L</th>
+            <th>ROI</th>
+            <th>Outcome</th>
+          </tr>
+        </thead>
+        <tbody id="scenariosTbody"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    // ── State ───────────────────────────────────────────────────────────────────
+    const MAX_LEGS = 30;
+    let legs = [];       // [{ ticker, title, side, yesBid, yesAsk, noBid, noAsk, last }]
+    const MARKET_DATA = {}; // ticker → market object (avoids fragile onclick serialization)
+
+    // ── Price helpers ───────────────────────────────────────────────────────────
+    function getLegCost(leg) {
+      if (leg.side === 'yes') {
+        return leg.yesAsk ?? leg.last ?? null;
+      } else {
+        if (leg.noAsk  != null) return leg.noAsk;
+        if (leg.yesBid != null) return 100 - leg.yesBid;
+        if (leg.last   != null) return 100 - leg.last;
+        return null;
+      }
+    }
+
+    // ── Search + category filter ────────────────────────────────────────────────
+    let _searchTimer  = null;
+    let _allResults   = [];   // full result set from last search
+    let _activeCat    = 'all';
+
+    document.getElementById('spreadSearchInput').addEventListener('input', function () {
+      clearTimeout(_searchTimer);
+      const q = this.value.trim();
+      _searchTimer = setTimeout(() => runSearch(q), 320);
+    });
+
+    // Trigger default on page load
+    runSearch('');
+
+    function quickSearch(q) {
+      const inp = document.getElementById('spreadSearchInput');
+      inp.value = q;
+      clearTimeout(_searchTimer);
+      _activeCat = 'all';
+      updateCatTabs();
+      runSearch(q);
+    }
+
+    function setCat(cat) {
+      _activeCat = cat;
+      updateCatTabs();
+      applyFilter();
+    }
+
+    function updateCatTabs() {
+      document.querySelectorAll('.cat-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.cat === _activeCat);
+      });
+    }
+
+    function applyFilter() {
+      const filtered = _activeCat === 'all'
+        ? _allResults
+        : _allResults.filter(m => m.category === _activeCat);
+      const resultsEl = document.getElementById('spreadSearchResults');
+      renderMarketList(filtered, resultsEl);
+      gsapStaggerResults(resultsEl);
+      const status = document.getElementById('searchStatus');
+      status.textContent = filtered.length
+        ? `${filtered.length} market${filtered.length !== 1 ? 's' : ''}${_activeCat !== 'all' ? ' · ' + _activeCat : ''}`
+        : 'No results in this category';
+    }
+
+    async function runSearch(q) {
+      const status = document.getElementById('searchStatus');
+      status.textContent = 'Searching…';
+      try {
+        const res  = await fetch(`/spreads/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Search failed');
+        _allResults = data.results || [];
+
+        // Show/hide category tabs — only useful when there are results with categories
+        const cats = new Set(_allResults.map(m => m.category).filter(Boolean));
+        const tabsEl = document.getElementById('catTabs');
+        if (cats.size > 1) {
+          tabsEl.style.display = 'flex';
+          // Hide tabs for categories not present in results
+          document.querySelectorAll('.cat-tab[data-cat]').forEach(b => {
+            const c = b.dataset.cat;
+            b.style.display = (c === 'all' || cats.has(c)) ? '' : 'none';
+          });
+        } else {
+          tabsEl.style.display = 'none';
+        }
+
+        renderSignalCard(data.signal);
+        applyFilter();
+        if (data.signal) startSignalRefresh(q); else stopSignalRefresh();
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        renderSignalCard(null);
+        stopSignalRefresh();
+      }
+    }
+
+    // ── Auto-refresh (crypto only) ───────────────────────────────────────────────
+    const REFRESH_INTERVAL = 60;
+    let _refreshTick   = null;
+    let _refreshSecs   = REFRESH_INTERVAL;
+    let _refreshQuery  = null;
+
+    function startSignalRefresh(q) {
+      stopSignalRefresh();
+      _refreshQuery = q;
+      _refreshSecs  = REFRESH_INTERVAL;
+      _refreshTick  = setInterval(() => {
+        _refreshSecs--;
+        updateRefreshLabel();
+        if (_refreshSecs <= 0) {
+          _refreshSecs = REFRESH_INTERVAL;
+          silentRefreshSignal();
+        }
+      }, 1000);
+      updateRefreshLabel();
+    }
+
+    function stopSignalRefresh() {
+      clearInterval(_refreshTick);
+      _refreshTick  = null;
+      _refreshQuery = null;
+      const el = document.getElementById('csigRefresh');
+      if (el) el.textContent = '';
+    }
+
+    function updateRefreshLabel() {
+      const el = document.getElementById('csigRefresh');
+      if (el) el.textContent = `↻ ${_refreshSecs}s`;
+    }
+
+    async function silentRefreshSignal() {
+      if (!_refreshQuery) return;
+      try {
+        const res  = await fetch(`/spreads/search?q=${encodeURIComponent(_refreshQuery)}`);
+        const data = await res.json();
+        if (!res.ok) return;
+        _allResults = data.results || [];
+        renderSignalCard(data.signal);
+        applyFilter();
+        const status = document.getElementById('searchStatus');
+        if (status) status.textContent = data.results?.length
+          ? `${data.results.length} market${data.results.length !== 1 ? 's' : ''}`
+          : 'No results';
+      } catch {}
+    }
+
+    function fmtCryptoPrice(price, symbol) {
+      if (!price) return '—';
+      if (symbol === 'DOGE') return '$' + price.toFixed(4);
+      if (price >= 1000)     return '$' + Math.round(price).toLocaleString('en-US');
+      if (price >= 1)        return '$' + price.toFixed(2);
+      return '$' + price.toFixed(4);
+    }
+
+    function fmtExpiry(closeTime) {
+      if (!closeTime) return null;
+      const d = new Date(closeTime);
+      const now = Date.now();
+      const diffMs = d - now;
+      if (diffMs > 0 && diffMs < 60 * 60 * 1000) {
+        const mins = Math.round(diffMs / 60000);
+        return mins <= 1 ? '< 1m left' : `${mins}m left`;
+      }
+      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function fmtWindow(minutes) {
+      if (!minutes) return null;
+      if (minutes < 60)  return minutes + '-min contract';
+      if (minutes === 60) return '1-hour contract';
+      return (minutes / 60) + '-hour contract';
+    }
+
+    function winProbColor(p) {
+      if (!p) return 'var(--text2)';
+      if (p >= 90) return 'var(--green)';
+      if (p >= 70) return 'var(--yellow)';
+      return 'var(--red)';
+    }
+
+    function renderSignalCard(signal) {
+      const card = document.getElementById('cryptoSignalCard');
+      if (!signal) { card.style.display = 'none'; card.innerHTML = ''; return; }
+
+      const { price, change1h, symbol, picks, windowMinutes, closeTime, hourlyVol } = signal;
+      const priceStr  = fmtCryptoPrice(price, symbol);
+      const changeDir = change1h >= 0 ? 'up' : 'down';
+      const changeStr = (change1h >= 0 ? '↑ +' : '↓ ') + Math.abs(change1h).toFixed(2) + '%';
+      const windowLbl = fmtWindow(windowMinutes);
+      const expiryStr = closeTime ? fmtExpiry(closeTime) : null;
+
+      const MEDALS  = ['🥇', '🥈', '🥉'];
+      const COLORS  = ['var(--green)', 'var(--primary)', 'var(--text2)'];
+
+      function recRow(rank, bet) {
+        if (!bet) return '';
+        const expStr  = fmtExpiry(bet.closeTime);
+        const tagParts = [];
+        if (bet.itm)                            tagParts.push(`<span class="bet-tag tag-itm">✓ In the money</span>`);
+        else if (bet.pctAway != null)           tagParts.push(`<span class="bet-tag tag-otm">${bet.pctAway}% away</span>`);
+        if (expStr)                             tagParts.push(`<span class="bet-tag">⏱ ${escHtml(expStr)}</span>`);
+        if (bet.ev != null && bet.ev !== 0)    tagParts.push(`<span class="bet-tag" style="color:${bet.ev > 0 ? 'var(--green)' : 'var(--red)'}">EV ${bet.ev > 0 ? '+' : ''}${bet.ev}¢</span>`);
+
+        const probColor = winProbColor(bet.winProb);
+        return `<div class="bet-card pick-${rank + 1}">
+          <div class="bet-card-rank">${MEDALS[rank] || '#' + (rank + 1)}</div>
+          <div class="bet-card-body">
+            <div class="bet-card-title">${escHtml(bet.title)}</div>
+            <div class="bet-card-tags">${tagParts.join('')}</div>
+          </div>
+          <div class="bet-card-right">
+            ${bet.winProb != null ? `<div class="bet-card-prob" style="color:${probColor}">${bet.winProb}%<span class="bet-card-prob-lbl">chance</span></div>` : ''}
+            <button id="qb-${escAttr(bet.ticker)}" class="btn-qb"
+                    onclick="executeQuickBet('${escAttr(bet.ticker)}', event)"
+                    title="1 contract YES market order">⚡ Bet</button>
+            <button class="btn-add-slip" onclick="event.stopPropagation();addLegByTicker('${escAttr(bet.ticker)}')">+ Slip</button>
+          </div>
+        </div>`;
+      }
+
+      card.style.display = '';
+      card.innerHTML = `<div class="crypto-signal-card">
+        <div class="csig-header">
+          <span class="csig-symbol">${escHtml(symbol)}</span>
+          <span class="csig-price">${escHtml(priceStr)}</span>
+          <span class="csig-change ${changeDir}">${escHtml(changeStr)}</span>
+          <span class="csig-label">1h</span>
+          ${hourlyVol ? `<span class="csig-window">σ ${hourlyVol.toFixed(2)}%/hr${windowLbl ? ' · ' + windowLbl : ''}${expiryStr ? ' · exp ' + escHtml(expiryStr) : ''}</span>` : (windowLbl ? `<span class="csig-window">${escHtml(windowLbl)}${expiryStr ? ' · exp ' + escHtml(expiryStr) : ''}</span>` : '')}
+          <span id="csigRefresh" class="csig-refresh"></span>
+        </div>
+        <div class="csig-recs">
+          ${(picks || []).map((p, i) => recRow(i, p)).join('')}
+        </div>
+      </div>`;
+
+      (picks || []).forEach(b => { if (b) MARKET_DATA[b.ticker] = b; });
+    }
+
+    // ── Lookups ───────────────────────────────────────────────────────────────────
+    const TEAM_NAMES = {
+      // NBA (3-letter Kalshi codes)
+      ATL:'Hawks',BOS:'Celtics',BKN:'Nets',CHA:'Hornets',CHI:'Bulls',
+      CLE:'Cavaliers',DAL:'Mavericks',DEN:'Nuggets',DET:'Pistons',GSW:'Warriors',
+      HOU:'Rockets',IND:'Pacers',LAC:'Clippers',LAL:'Lakers',MEM:'Grizzlies',
+      MIA:'Heat',MIL:'Bucks',MIN:'Timberwolves',NOP:'Pelicans',NYK:'Knicks',
+      OKC:'Thunder',ORL:'Magic',PHI:'76ers',PHX:'Suns',POR:'Trail Blazers',
+      SAC:'Kings',SAS:'Spurs',TOR:'Raptors',UTA:'Jazz',WAS:'Wizards',
+      // MLB — only codes that don't conflict with NBA codes above.
+      // Conflicting codes (ATL, BOS, CLE, DET, HOU, MIA, MIL, MIN, PHI, TOR)
+      // keep their NBA meaning here; MLB grouping still works via exact matchup key.
+      ARI:'Diamondbacks',BAL:'Orioles',
+      CHC:'Cubs',CWS:'White Sox',CIN:'Reds',COL:'Rockies',
+      KC:'Royals',KCR:'Royals',LAA:'Angels',LAD:'Dodgers',
+      NYM:'Mets',NYY:'Yankees',OAK:'Athletics',ATH:'Athletics',
+      PIT:'Pirates',SD:'Padres',SDP:'Padres',
+      SEA:'Mariners',SF:'Giants',SFG:'Giants',STL:'Cardinals',
+      TB:'Rays',TBR:'Rays',TEX:'Rangers',WSH:'Nationals',
+    };
+
+    // ── Helpers ───────────────────────────────────────────────────────────────────
+    function parseTitle(title) {
+      const ci = title.indexOf(':');
+      if (ci > 0) return { name: title.slice(0, ci).trim(), threshold: title.slice(ci + 1).trim() };
+      return { name: title, threshold: null };
+    }
+
+    function tickerDateKey(ticker) {
+      const m = ticker.match(/-(\d{2}[A-Z]{3}\d{2})/);
+      return m ? m[1] : null;
+    }
+
+    // Parse a date from group key — two formats, both produce LOCAL dates (no UTC shift)
+    const _MON = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+    function dateFromKey(key) {
+      if (!key) return null;
+      // Kalshi ticker date format is YYMMM DD: first 2 digits = year (2000+), last 2 = day
+      // e.g. "26MAY08" = May 8, 2026. Key may have matchup suffix: "26MAY08NYKPHI"
+      const m1 = key.match(/^(\d{2})([A-Z]{3})(\d{2})/);
+      if (m1) {
+        const month = _MON[m1[2]];
+        if (month == null) return null;
+        return new Date(2000 + parseInt(m1[1]), month, parseInt(m1[3]));
+      }
+      // dt- format: "dt-2026-4-19" (built from local date)
+      const m2 = key.match(/^dt-(\d{4})-(\d+)-(\d+)$/);
+      if (m2) return new Date(parseInt(m2[1]), parseInt(m2[2]), parseInt(m2[3]));
+      return null;
+    }
+
+    // Detect stat type directly from ticker prefix — never falls back to seriesTicker
+    function statFromTicker(ticker) {
+      const t = ticker.toUpperCase();
+      if (t.startsWith('KXNBAPTS'))   return 'Pts';
+      if (t.startsWith('KXNBAAST'))   return 'Ast';
+      if (t.startsWith('KXNBAREB'))   return 'Reb';
+      if (t.startsWith('KXNBATHRPM')) return '3PM';
+      if (t.startsWith('KXNBASTL'))   return 'Stl';
+      if (t.startsWith('KXNBABLK'))   return 'Blk';
+      if (t.startsWith('KXNBATOTAL')) return 'Total';
+      if (t.startsWith('KXMLBHITS'))  return 'Hits';
+      if (t.startsWith('KXMLBHR'))    return 'HR';
+      if (t.startsWith('KXMLBRBI'))   return 'RBI';
+      if (t.startsWith('KXMLBSO'))    return 'Ks';
+      if (t.startsWith('KXMLBBB'))    return 'BB';
+      if (t.startsWith('KXMLBERA'))   return 'ERA';
+      return null;
+    }
+
+    function parseGameTicker(ticker) {
+      const m = ticker.match(/GAME-(\d{2}[A-Z]{3}\d{2})([A-Z]{5,9})-/);
+      if (!m) return null;
+      const dateKey = m[1], combo = m[2];
+      for (let i = 2; i <= 5; i++) {
+        const t1 = combo.slice(0, i), t2 = combo.slice(i);
+        if (TEAM_NAMES[t1] && TEAM_NAMES[t2]) {
+          // Normalize team order so SASMIN and MINSAS produce the same key
+          const [ta, tb] = [t1, t2].sort();
+          return { dateKey, matchupKey: dateKey + ta + tb, label: `${TEAM_NAMES[t1]} vs ${TEAM_NAMES[t2]}` };
+        }
+      }
+      return { dateKey, matchupKey: dateKey + combo, label: null };
+    }
+
+    // ── Simple market row (used for game-winner & fallback) ───────────────────────
+    function mktRow(m) {
+      const added    = legs.some(l => l.ticker === m.ticker);
+      const yesPrice = m.yesAsk ?? m.last;
+      const noPrice  = m.noAsk  ?? (yesPrice != null ? 100 - yesPrice : null);
+      const barW     = yesPrice != null ? Math.max(2, Math.min(98, yesPrice)) : null;
+      const barColor = barW != null ? (barW >= 60 ? 'var(--green)' : barW <= 20 ? 'var(--red)' : 'var(--primary)') : '';
+      const addBtn   = added
+        ? `<span class="mkt-added-lbl">✓ Added</span>`
+        : `<button class="btn-add-row" onclick="event.stopPropagation();addLegByTicker('${escAttr(m.ticker)}')">+ Add</button>`;
+      const gameCtx = gameContextFromTicker(m.ticker);
+      return `<div class="mkt-row ${added?'mkt-row-added':''}" onclick="${added?'':` addLegByTicker('${escAttr(m.ticker)}')`}">
+        <div class="mkt-row-left">
+          <div class="mkt-row-title">${escHtml(m.title)}</div>
+          ${gameCtx ? `<div class="mkt-row-game-ctx">${escHtml(gameCtx)}</div>` : ''}
+          ${barW!=null?`<div class="mkt-prob-bar"><div class="mkt-prob-fill" style="width:${barW}%;background:${barColor}"></div></div>`:''}
+        </div>
+        <div class="mkt-row-right">
+          ${yesPrice!=null?`<div class="mkt-prices"><span class="mkt-price-yes">${yesPrice}¢</span>${noPrice!=null?`<span class="mkt-price-no">${noPrice}¢ NO</span>`:''}</div>`:''}
+          ${addBtn}
+        </div>
+      </div>`;
+    }
+
+    // ── Extract game label from any non-GAME ticker ──────────────────────────────
+    // Returns e.g. "Yankees vs Blue Jays · May 9" or null
+    function gameContextFromTicker(ticker) {
+      if (!ticker || /^GAME-/i.test(ticker)) return null;
+      const parts = ticker.split('-');
+      if (parts.length < 2) return null;
+      const seg2 = parts[1]; // e.g. "26MAY09NYYTOR" or "26MAY09BOSNYY"
+      const dm = seg2.match(/^(\d{2})([A-Z]{3})(\d{2})([A-Z]+)$/);
+      if (!dm) return null;
+      const combo = dm[4];
+      let label = null;
+      for (let i = 2; i <= 5; i++) {
+        const t1 = combo.slice(0, i), t2 = combo.slice(i);
+        if (TEAM_NAMES[t1] && TEAM_NAMES[t2]) { label = `${TEAM_NAMES[t1]} vs ${TEAM_NAMES[t2]}`; break; }
+      }
+      if (!label) return null;
+      const _MON2 = {JAN:'Jan',FEB:'Feb',MAR:'Mar',APR:'Apr',MAY:'May',JUN:'Jun',
+                     JUL:'Jul',AUG:'Aug',SEP:'Sep',OCT:'Oct',NOV:'Nov',DEC:'Dec'};
+      const dateStr = `${_MON2[dm[2]] || dm[2]} ${parseInt(dm[3])}`;
+      return `${label} · ${dateStr}`;
+    }
+
+    // ── Extract team code from prop ticker ───────────────────────────────────────
+    // Actual Kalshi format: SERIES-DATEMATCHUP-TEAMPLAYER-THRESHOLD
+    // e.g. "KXNBASTL-26MAY04PHINYK-NYKOANUNOBY8-1" → team is first 2–4 letters of 3rd segment = "NYK"
+    function teamFromPropTicker(ticker) {
+      const parts = ticker.split('-');
+      if (parts.length >= 3) {
+        const seg = parts[2];
+        for (let i = 2; i <= 4; i++) {
+          const code = seg.slice(0, i);
+          if (TEAM_NAMES[code]) return code;
+        }
+      }
+      return null;
+    }
+
+    // ── Best-bet selection per player ─────────────────────────────────────────────
+    // Returns the single market with best YES price in the sweet spot (45–93¢).
+    // Uses yesBid as fallback so low-liquidity Reb/Ast/Blk markets are included.
+    function mktPrice(m) { return m.yesAsk ?? m.yesBid ?? m.last ?? 0; }
+    function bestBet(markets) {
+      const priced  = markets.filter(m => mktPrice(m) > 0);
+      if (!priced.length) return null;
+      const inRange = priced.filter(m => { const p = mktPrice(m); return p >= 45 && p <= 93; });
+      const pool    = inRange.length ? inRange : priced;
+      return pool.reduce((best, m) => {
+        const bp = mktPrice(best) + (best._confidence ?? 0);
+        const mp = mktPrice(m)    + (m._confidence    ?? 0);
+        return mp > bp ? m : best;
+      });
+    }
+
+    // ── Player row: name + stat chips ────────────────────────────────────────────
+    function playerRow(playerName, statGroups) {
+      const statLines = Object.entries(statGroups).map(([stat, mkts]) => {
+        const sorted = mkts.slice().sort((a, b) => {
+          const ta = parseFloat((parseTitle(a.title).threshold || '0').replace('+',''));
+          const tb = parseFloat((parseTitle(b.title).threshold || '0').replace('+',''));
+          return ta - tb;
+        });
+        const best = bestBet(mkts);
+        const chips = sorted.map(m => {
+          const added   = legs.some(l => l.ticker === m.ticker);
+          const price   = m.yesAsk ?? m.last;
+          const thresh  = parseTitle(m.title).threshold || m.title;
+          const isBest  = best && m.ticker === best.ticker;
+          return `<button class="stat-chip${added?' added':''}${isBest?' best':''}" onclick="addLegByTicker('${escAttr(m.ticker)}')">${escHtml(thresh)}${price!=null?` <span class="chip-price">${price}¢</span>`:''}</button>`;
+        }).join('');
+        return `<div class="player-stat-line"><span class="stat-label">${escHtml(stat)}</span><div class="stat-chips">${chips}</div></div>`;
+      }).join('');
+      return `<div class="player-row"><div class="player-name">${escHtml(playerName)}</div><div class="player-stats">${statLines}</div></div>`;
+    }
+
+    // ── Group markets by game matchup ─────────────────────────────────────────────
+    function groupByMatchup(markets) {
+      const gamesByDate = {};
+      for (const m of markets) {
+        if (m.category === 'game') {
+          const info  = parseGameTicker(m.ticker);
+          const key   = info?.matchupKey || info?.dateKey || tickerDateKey(m.ticker) || 'other';
+          if (!gamesByDate[key]) gamesByDate[key] = { key, label: info?.label || null, closeTime: m.closeTime, gameMkts: [], propMkts: [], teams: {} };
+          else if (info?.label && !gamesByDate[key].label) gamesByDate[key].label = info.label;
+          // Store team codes for fallback prop-to-game matching via team lookup
+          const combo = m.ticker.match(/GAME-\d{2}[A-Z]{3}\d{2}([A-Z]{5,9})-/)?.[1];
+          if (combo) {
+            for (let i = 2; i <= 5; i++) {
+              const t1 = combo.slice(0, i), t2 = combo.slice(i);
+              if (TEAM_NAMES[t1] && TEAM_NAMES[t2]) {
+                gamesByDate[key].teams[t1] = true;
+                gamesByDate[key].teams[t2] = true;
+                break;
+              }
+            }
+          }
+          gamesByDate[key].gameMkts.push(m);
+        }
+      }
+
+      // Build team → game-group reverse lookup, preferring the earliest-dated group per team
+      const teamToGameKey = {};
+      for (const [key, g] of Object.entries(gamesByDate)) {
+        const gDate = dateFromKey(key) || (g.closeTime ? new Date(g.closeTime) : new Date('2099'));
+        for (const team of Object.keys(g.teams)) {
+          const existingKey = teamToGameKey[team];
+          if (!existingKey) {
+            teamToGameKey[team] = key;
+          } else {
+            const exDate = dateFromKey(existingKey) || new Date('2099');
+            if (gDate < exDate) teamToGameKey[team] = key;
+          }
+        }
+      }
+
+      for (const m of markets) {
+        if (m.category === 'game') continue;
+        // Primary: prop segment 2 (DATE+MATCHUP) is the exact game group key
+        // e.g. KXNBAPTS-26MAY08NYKPHI-NYKMAXEY-20  →  parts[1] = "26MAY08NYKPHI"
+        const parts  = m.ticker.split('-');
+        const propMK = parts.length >= 2 ? parts[1] : null;
+        if (propMK && gamesByDate[propMK]) {
+          gamesByDate[propMK].propMkts.push(m);
+          continue;
+        }
+        // Fallback: team-code lookup (handles series-end game-winner date mismatch)
+        const propTeam    = teamFromPropTicker(m.ticker);
+        const teamGameKey = propTeam ? teamToGameKey[propTeam] : null;
+        if (teamGameKey) {
+          gamesByDate[teamGameKey].propMkts.push(m);
+          continue;
+        }
+        // Last resort: orphan group keyed by date or closeTime
+        const dk  = tickerDateKey(m.ticker);
+        const d   = m.closeTime ? new Date(m.closeTime) : null;
+        const key = dk || (d ? `dt-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` : 'upcoming');
+        if (!gamesByDate[key]) gamesByDate[key] = { key, label: null, closeTime: m.closeTime, gameMkts: [], propMkts: [], teams: {} };
+        gamesByDate[key].propMkts.push(m);
+      }
+      const _sortNow = new Date();
+      function groupSortDate(g) {
+        const keyDate = dateFromKey(g.key);
+        const ctDate  = g.closeTime ? new Date(g.closeTime) : null;
+        const cand    = keyDate || ctDate;
+        if (!cand) return new Date('2099');
+        const days = (cand - _sortNow) / (1000 * 60 * 60 * 24);
+        // Mirror the display-date logic: far-future (>21d) placeholder → sort as today
+        return (days > 21 || days < -2) ? _sortNow : cand;
+      }
+      return Object.values(gamesByDate).sort((a, b) => groupSortDate(a) - groupSortDate(b));
+    }
+
+    // ── Render one game accordion ─────────────────────────────────────────────────
+    function renderGameAccordion(group, idx) {
+      const id     = `gacc-${idx}`;
+      const isOpen = idx === 0;
+      const total  = group.gameMkts.length + group.propMkts.length;
+
+      // Build player map: playerName → { statType → [markets] }
+      const playerMap  = {};
+      const playerTeam = {}; // playerName → teamCode
+      for (const m of group.propMkts) {
+        const { name } = parseTitle(m.title);
+        const stat     = statFromTicker(m.ticker) || 'Stat';
+        const team     = teamFromPropTicker(m.ticker);
+        if (!playerMap[name])  playerMap[name]  = {};
+        if (!playerTeam[name]) playerTeam[name] = team;
+        if (!playerMap[name][stat]) playerMap[name][stat] = [];
+        playerMap[name][stat].push(m);
+      }
+
+      // Best bets: stat-champion approach forces diversity, plus game winner (ML) markets.
+      const statChampions  = {};
+      const allCandidates  = [];
+
+      // Prop markets — one champion per stat type
+      for (const [player, statGroups] of Object.entries(playerMap)) {
+        for (const [stat, mkts] of Object.entries(statGroups)) {
+          const pick = bestBet(mkts);
+          if (!pick) continue;
+          allCandidates.push({ player, stat, pick });
+          if (!statChampions[stat] || mktPrice(pick) > mktPrice(statChampions[stat].pick)) {
+            statChampions[stat] = { player, stat, pick };
+          }
+        }
+      }
+
+      // Game winner (moneyline) markets — add the favored side as a "Win" candidate
+      for (const m of group.gameMkts) {
+        const yp = mktPrice(m);
+        if (yp <= 0) continue;
+        // Pick the side that is actually favored (highest YES price > 50 = YES team; else NO side)
+        const favoredPrice = yp >= 50 ? yp : (m.noAsk ?? (100 - yp));
+        const favoredTitle = yp >= 50 ? (m.title || 'Team') : (m.fullTitle || m.title || 'Team');
+        const winPick = { ...m, _winSide: yp >= 50 ? 'yes' : 'no', _winPrice: favoredPrice, _winTitle: favoredTitle };
+        allCandidates.push({ player: favoredTitle, stat: 'Win', pick: winPick });
+        if (!statChampions['Win'] || favoredPrice > mktPrice(statChampions['Win'].pick)) {
+          statChampions['Win'] = { player: favoredTitle, stat: 'Win', pick: winPick };
+        }
+      }
+
+      allCandidates.sort((a, b) => mktPrice(b.pick) - mktPrice(a.pick));
+
+      // Show stat champions first (one per stat type, skip duplicate players), then fill to 6
+      const champsSorted = Object.values(statChampions).sort((a, b) => mktPrice(b.pick) - mktPrice(a.pick));
+      const bestBets    = [];
+      const seenPlayers = new Set();
+      const seenTotals  = new Set(); // deduplicate "Over/Under X runs scored" style markets
+
+      function acceptBestBet(c) {
+        if (seenPlayers.has(c.player)) return false;
+        // Skip very low-probability props — keep Win/moneyline regardless
+        if (c.stat !== 'Win' && mktPrice(c.pick) < 30) return false;
+        // Total-type market: title is "Over X.X <desc>" with no colon
+        const totalMatch = c.player.match(/^(?:over|under)\s+[\d.]+\s+(.+)/i);
+        if (totalMatch) {
+          const key = totalMatch[1].toLowerCase().trim();
+          if (seenTotals.has(key)) return false;
+          seenTotals.add(key);
+        }
+        return true;
+      }
+
+      for (const c of champsSorted) {
+        if (bestBets.length >= 6) break;
+        if (!acceptBestBet(c)) continue;
+        bestBets.push({ player: c.player, pick: c.pick });
+        seenPlayers.add(c.player);
+      }
+      for (const c of allCandidates) {
+        if (bestBets.length >= 6) break;
+        if (!acceptBestBet(c)) continue;
+        bestBets.push({ player: c.player, pick: c.pick });
+        seenPlayers.add(c.player);
+      }
+
+      // Group players by team
+      const teamPlayerMap = {}; // teamCode → [playerName]
+      for (const [p, team] of Object.entries(playerTeam)) {
+        const t = team || 'Other';
+        if (!teamPlayerMap[t]) teamPlayerMap[t] = [];
+        teamPlayerMap[t].push(p);
+      }
+
+      // Determine the display date for this group.
+      // Kalshi playoff series markets use the SERIES END date in both the ticker key and
+      // closeTime (e.g. "20MAY26"), not the individual game date. If that derived date is
+      // more than 2 days in the future, the market is open now for a game happening today —
+      // so fall back to today's actual date.
+      const _now      = new Date();
+      const _keyDate  = dateFromKey(group.key);
+      const _ctDate   = group.closeTime ? new Date(group.closeTime) : null;
+      // Pick the most specific known date (key > closeTime), then check if it's far future
+      const _candidate = _keyDate || _ctDate;
+      const _daysOut   = _candidate ? (_candidate - _now) / (1000 * 60 * 60 * 24) : null;
+      // Show today only if date is >21 days out (series-end placeholder) or >2 days in the past (stale year)
+      const _displayDate = (_daysOut !== null && (_daysOut > 21 || _daysOut < -2)) ? _now : (_candidate || _now);
+      const dateStr   = _displayDate.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
+      const headerLabel = group.label || dateStr || 'Game';
+      const headerSub   = group.label ? dateStr : '';
+
+      // Best bets section
+      const bestBetsHtml = bestBets.length ? `
+        <div class="best-bets-section">
+          <div class="best-bets-label">⚡ Best Bets</div>
+          <div class="best-bets-list">
+            ${bestBets.slice(0, 6).map(({ player, pick }) => {
+              const added    = legs.some(l => l.ticker === pick.ticker);
+              const isWin    = pick._winSide != null;
+              const price    = isWin ? pick._winPrice : (pick.yesAsk ?? pick.yesBid ?? pick.last);
+              const stat     = isWin ? 'Moneyline' : (statFromTicker(pick.ticker) || '');
+              const thresh   = isWin ? 'to win' : (parseTitle(pick.title).threshold || '');
+              const noteHtml = pick._realWorldNote
+                ? `<span class="bb-note">${escHtml(pick._realWorldNote)}</span>`
+                : '';
+              const statsHtml = pick._playerStatLine
+                ? `<span class="bb-statline">${escHtml(pick._playerStatLine)}</span>`
+                : '';
+              return `<div class="best-bet-row ${added?'added':''}">
+                <div class="bb-info">
+                  <span class="bb-player">${escHtml(player)}</span>
+                  <div class="bb-meta">
+                    <span class="bb-desc">${escHtml(stat)} ${escHtml(thresh)}</span>${noteHtml}
+                  </div>
+                  ${statsHtml}
+                </div>
+                <div class="bb-right">
+                  ${price!=null?`<span class="bb-price">${price}¢</span>`:''}
+                  ${added
+                    ? `<span class="mkt-added-lbl">✓</span>`
+                    : `<button class="btn-add-row" onclick="addLegByTicker('${escAttr(pick.ticker)}')">+ Add</button>`}
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>` : '';
+
+      // Game winner
+      const gameWinnerHtml = group.gameMkts.length
+        ? `<div class="acc-game-winner">${group.gameMkts.map(mktRow).join('')}</div>` : '';
+
+      // All props by team, collapsible
+      const allPropsId   = `${id}-all`;
+      const teamsHtml    = Object.entries(teamPlayerMap).map(([team, players]) => {
+        const teamName = TEAM_NAMES[team] || team;
+        return `<div class="team-section">
+          <div class="team-section-label">${escHtml(teamName)}</div>
+          ${players.sort().map(p => playerRow(p, playerMap[p])).join('')}
+        </div>`;
+      }).join('');
+
+      const allPropsHtml = group.propMkts.length ? `
+        <div class="all-props-toggle">
+          <button class="all-props-btn" onclick="accToggle('${allPropsId}')">
+            All Props
+            <span class="all-props-count">${group.propMkts.length}</span>
+            <span class="all-props-arrow">▾</span>
+          </button>
+          <div id="${allPropsId}" style="display:none;margin-top:6px">${teamsHtml}</div>
+        </div>` : '';
+
+      return `<div class="game-accordion">
+        <button class="game-acc-header" onclick="accToggle('${id}-body')">
+          <span class="acc-arrow">${isOpen?'▾':'▸'}</span>
+          <span class="acc-label">${escHtml(headerLabel)}</span>
+          ${headerSub?`<span class="acc-sub">${escHtml(headerSub)}</span>`:''}
+          <span class="acc-count">${total}</span>
+        </button>
+        <div class="acc-body" id="${id}-body" style="${isOpen?'':'display:none'}">
+          ${gameWinnerHtml}${bestBetsHtml}${allPropsHtml}
+        </div>
+      </div>`;
+    }
+
+    function accToggle(id) {
+      const body = document.getElementById(id);
+      const arrow = body.previousElementSibling.querySelector('.acc-arrow');
+      const open  = body.style.display !== 'none';
+      body.style.display = open ? 'none' : '';
+      arrow.textContent  = open ? '▸' : '▾';
+    }
+    function accTab(accId, targetId, btn) {
+      const body = document.getElementById(`${accId}-body`);
+      body.querySelectorAll(':scope > div[id]').forEach(el => el.style.display = 'none');
+      document.getElementById(targetId).style.display = '';
+      body.querySelectorAll('.acc-cat-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    // ── Main entry point ──────────────────────────────────────────────────────────
+    function renderMarketList(results, container) {
+      if (!results.length) {
+        container.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:8px 0">No results.</div>';
+        return;
+      }
+      results.forEach(m => { MARKET_DATA[m.ticker] = m; });
+
+      const gameSpecific  = results.filter(m => ['game','props','total'].includes(m.category));
+      const championships = results.filter(m => m.category === 'championship');
+      const flat          = results.filter(m => !['game','props','total','championship'].includes(m.category));
+
+      if (!gameSpecific.length && !championships.length) {
+        container.innerHTML = results.map(mktRow).join('');
+        return;
+      }
+
+      let html = '';
+      if (championships.length) {
+        html += renderGameAccordion({ label:'🏆 Championship Futures', closeTime:null, gameMkts:championships, propMkts:[] }, -1);
+      }
+      groupByMatchup(gameSpecific).forEach((g, i) => { html += renderGameAccordion(g, i); });
+      flat.forEach(m => { html += mktRow(m); });
+      container.innerHTML = html;
+    }
+
+    // ── Leg management ──────────────────────────────────────────────────────────
+    function addLegByTicker(ticker) {
+      const m = MARKET_DATA[ticker];
+      if (!m) return;
+      if (legs.length >= MAX_LEGS) { showFlash(`Maximum ${MAX_LEGS} legs reached`); return; }
+      if (legs.some(l => l.ticker === ticker)) return;
+      legs.push({ ...m, side: 'yes', orderType: 'market', limitPrice: null });
+      recalculate();
+      renderLegs();
+      loadRelated(ticker);
+      startLegRefresh();
+    }
+
+    function toggleOrderType(i, type) {
+      if (!legs[i]) return;
+      legs[i].orderType = type;
+      if (type === 'limit' && !legs[i].limitPrice) {
+        legs[i].limitPrice = getLegCost(legs[i]);
+      }
+      renderLegs();
+    }
+
+    function setLimitPrice(i, val) {
+      if (!legs[i]) return;
+      legs[i].limitPrice = val ? parseInt(val) : null;
+    }
+
+    function removeLeg(i) {
+      legs.splice(i, 1);
+      recalculate();
+      renderLegs();
+      // Re-render search results to update "Added" badges
+      renderMarketList(Object.values(MARKET_DATA).slice(0, 50), document.getElementById('spreadSearchResults'));
+    }
+
+    function toggleSide(i, side) {
+      if (legs[i]) { legs[i].side = side; recalculate(); renderLegs(); }
+    }
+
+    function clearLegs() {
+      legs = [];
+      stopLegRefresh();
+      recalculate();
+      renderLegs();
+    }
+
+    // Keep a stable reference to the empty-state element so innerHTML resets don't lose it
+    const _legsEmptyEl = document.getElementById('legsEmpty');
+
+    function renderLegs() {
+      const list = document.getElementById('legsList');
+      document.getElementById('legCount').textContent = `${legs.length} / ${MAX_LEGS} legs`;
+
+      if (legs.length === 0) {
+        list.innerHTML = '';
+        list.appendChild(_legsEmptyEl);
+        _legsEmptyEl.style.display = '';
+        document.getElementById('spreadSummary').style.display  = 'none';
+        document.getElementById('scenariosCard').style.display  = 'none';
+        return;
+      }
+
+      _legsEmptyEl.style.display = 'none';
+      if (_legsEmptyEl.parentNode === list) list.removeChild(_legsEmptyEl);
+      document.getElementById('spreadSummary').style.display = '';
+
+      list.innerHTML = legs.map((leg, i) => {
+        const cost    = getLegCost(leg);
+        const isLimit = leg.orderType === 'limit';
+        const impliedProb = cost != null ? (leg.side === 'yes' ? cost : 100 - cost) : null;
+        const probColor = impliedProb == null ? 'var(--text2)'
+          : impliedProb >= 70 ? 'var(--green)'
+          : impliedProb >= 40 ? 'var(--yellow)'
+          : 'var(--red)';
+        const orderInfo = isLimit
+          ? `<input type="number" class="gen-input" style="width:58px;padding:4px 6px;font-size:12px;text-align:center"
+                    value="${leg.limitPrice || ''}" min="1" max="99" placeholder="¢ limit"
+                    oninput="setLimitPrice(${i}, this.value)">`
+          : `<span class="leg-price-tag">${cost != null ? cost + '¢' : '—'}</span>`;
+        const statLine = leg._playerStatLine
+          ? `<div class="leg-statline">${escHtml(leg._playerStatLine)}</div>` : '';
+        return `<div class="slip-leg fade-in">
+          <div class="slip-leg-top">
+            <div class="slip-leg-title">${escHtml(leg.title)}</div>
+            ${impliedProb != null ? `<span class="leg-prob" style="color:${probColor}">${impliedProb}%</span>` : ''}
+          </div>
+          ${statLine}
+          <div class="slip-leg-controls">
+            <div class="spread-side-toggle">
+              <button class="spread-side-btn ${leg.side === 'yes' ? 'active-yes' : ''}"
+                      onclick="toggleSide(${i}, 'yes')">YES</button>
+              <button class="spread-side-btn ${leg.side === 'no'  ? 'active-no'  : ''}"
+                      onclick="toggleSide(${i}, 'no')">NO</button>
+            </div>
+            <button class="slip-order-type ${isLimit ? 'slip-lmt' : ''}"
+                    onclick="toggleOrderType(${i}, '${isLimit ? 'market' : 'limit'}')"
+                    title="${isLimit ? 'Switch to market order' : 'Switch to limit order'}">
+              ${isLimit ? 'LMT ↕' : 'MKT'}
+            </button>
+            ${orderInfo}
+            <button class="btn-delete-pick" onclick="removeLeg(${i})" title="Remove">×</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    // ── Calculations ────────────────────────────────────────────────────────────
+    function recalculate() {
+      if (legs.length === 0) return;
+
+      const budget     = Math.max(0.01, parseFloat(document.getElementById('investInput')?.value) || 5);
+      const prices     = legs.map(l => getLegCost(l)); // cents (1–99)
+      const anyMissing = prices.some(p => p === null);
+
+      // True parlay math: each leg multiplies the payout
+      // e.g. 85¢ YES = 1/0.85 = 1.176x multiplier on that leg
+      const multiplier  = anyMissing ? null : prices.reduce((m, p) => m * (100 / p), 1);
+      const maxPayout   = multiplier != null ? budget * multiplier : null;
+      const maxProfit   = maxPayout  != null ? maxPayout - budget  : null;
+      const roi         = maxProfit  != null ? (maxProfit / budget * 100).toFixed(1) : null;
+
+      // Combined win probability (product of each leg's implied probability)
+      const combinedProb = anyMissing ? null
+        : +( prices.reduce((p, c) => p * (c / 100), 1) * 100 ).toFixed(1);
+
+      const lbl = document.getElementById('contractsLabel');
+      if (lbl) lbl.textContent = '';
+
+      // Drive the probability meter
+      const meterWrap = document.getElementById('probMeterWrap');
+      const meterBar  = document.getElementById('probMeterBar');
+      const meterLbl  = document.getElementById('probMeterLabel');
+      if (combinedProb != null) {
+        meterWrap.style.display = '';
+        meterLbl.textContent    = combinedProb + '%';
+        meterLbl.style.color    = combinedProb >= 50 ? 'var(--green)' : combinedProb >= 20 ? 'var(--yellow)' : 'var(--red)';
+        meterBar.style.width    = combinedProb + '%';
+        meterBar.style.background = combinedProb >= 50
+          ? 'linear-gradient(90deg,#00b388,#00ffcc)'
+          : combinedProb >= 20
+            ? 'linear-gradient(90deg,#c97e00,#f5a623)'
+            : 'linear-gradient(90deg,#c0323e,#f04f5e)';
+      } else {
+        meterWrap.style.display = 'none';
+      }
+
+      document.getElementById('spreadFinancials').innerHTML = `
+        <div class="fin-item">
+          <span class="fin-label">Wager</span>
+          <span class="fin-value">$${budget.toFixed(2)}</span>
+        </div>
+        <div class="fin-item">
+          <span class="fin-label">Max Payout</span>
+          <span class="fin-value green">${maxPayout != null ? '$' + maxPayout.toFixed(2) : '—'}</span>
+        </div>
+        <div class="fin-item">
+          <span class="fin-label">Max Profit</span>
+          <span class="fin-value ${maxProfit != null && maxProfit >= 0 ? 'green' : 'red'}">
+            ${maxProfit != null ? (maxProfit >= 0 ? '+' : '') + '$' + maxProfit.toFixed(2) : '—'}
+          </span>
+        </div>
+        <div class="fin-item">
+          <span class="fin-label">ROI</span>
+          <span class="fin-value">${roi != null ? roi + '%' : '—'}</span>
+        </div>`;
+
+      const missingLimitPrice = legs.some(l => l.orderType === 'limit' && !l.limitPrice);
+      const execBtn = document.getElementById('executeBtn');
+      execBtn.disabled = missingLimitPrice || legs.length === 0;
+      execBtn.title = missingLimitPrice ? 'Set a limit price for all LMT legs before executing' : '';
+
+      renderScenarios(prices, multiplier, budget);
+    }
+
+    function renderScenarios(prices, multiplier, budget) {
+      const n    = legs.length;
+      const tbody = document.getElementById('scenariosTbody');
+
+      // Parlay: only full win pays out (all legs must win)
+      // Show: all win → full payout; any loss → lose wager
+      tbody.innerHTML = Array.from({ length: n + 1 }, (_, wins) => {
+        const isFullWin = wins === n;
+        const gross  = isFullWin && multiplier != null ? budget * multiplier : 0;
+        const net    = gross - budget;
+        const roiVal = isFullWin && multiplier != null ? ((net / budget) * 100).toFixed(1) : (-100).toFixed(1);
+        const color  = net >= 0 ? 'green' : 'red';
+        const netStr = (net >= 0 ? '+' : '') + '$' + net.toFixed(2);
+
+        // Example outcome: first `wins` legs win, rest lose
+        const example = legs.map((l, i) => {
+          const w = i < wins;
+          return `<span style="font-size:10px;font-weight:700;color:var(--${w ? 'green' : 'red'});margin-right:4px">${escHtml(l.ticker.split('-')[0])} ${w ? 'W' : 'L'}</span>`;
+        }).join('');
+
+        return `<tr>
+          <td><strong>${wins}</strong> / ${n}</td>
+          <td>$${gross.toFixed(2)}</td>
+          <td class="${color}">${netStr}</td>
+          <td>${roiVal != null ? roiVal + '%' : '—'}</td>
+          <td>${example}</td>
+        </tr>`;
+      }).join('');
+
+      document.getElementById('scenariosCard').style.display = '';
+      document.getElementById('scenariosSubtitle').textContent =
+        `${n} leg${n !== 1 ? 's' : ''} · ${Math.pow(2, n)} total outcome combinations`;
+    }
+
+    // ── Execute ─────────────────────────────────────────────────────────────────
+    async function executeSpread() {
+      if (legs.length === 0) return;
+      const budget    = Math.max(0.01, parseFloat(document.getElementById('investInput').value) || 5);
+      const unitTotal = legs.reduce((s, l) => { const c = getLegCost(l); return c != null ? s + c / 100 : s; }, 0);
+      const contracts = unitTotal > 0 ? Math.max(1, Math.floor(budget / unitTotal)) : 1;
+
+      if (!confirm(`Place ${legs.length} market order(s) · ${contracts} contract(s) each?\n\nThis will use real funds on Kalshi.`)) return;
+
+      const btn    = document.getElementById('executeBtn');
+      const status = document.getElementById('executeStatus');
+      btn.classList.add('loading');
+      btn.disabled = true;
+      status.innerHTML = '';
+
+      try {
+        const res = await fetch('/spreads/execute', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            legs: legs.map(l => {
+              const isLimit = l.orderType === 'limit' && l.limitPrice != null;
+              return {
+                ticker: l.ticker, side: l.side, count: contracts,
+                type:   isLimit ? 'limit' : 'market',
+                ...(isLimit ? { price: l.limitPrice } : {}),
+              };
+            }),
+          }),
+        });
+        const data = await res.json();
+
+        const alertClass = data.ok ? 'alert-info' : res.status === 207 ? 'alert' : 'alert-error';
+        const alertStyle = res.status === 207 ? 'background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);color:var(--yellow);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:0.75rem' : '';
+
+        status.innerHTML = alertStyle
+          ? `<div style="${alertStyle}">${escHtml(data.message)}</div>`
+          : `<div class="alert ${alertClass}">${escHtml(data.message)}</div>`;
+
+        if (data.results?.length) {
+          status.innerHTML += '<ul class="leg-list" style="margin-top:8px">' +
+            data.results.map(r => `
+              <li class="leg-item">
+                <span class="leg-side ${r.side}">${r.side.toUpperCase()}</span>
+                <span class="leg-title">${escHtml(r.ticker)}</span>
+                <span style="font-size:10px;color:var(--text2);flex-shrink:0">${r.type === 'limit' ? `@ ${r.limitPrice}¢ LMT` : 'MKT'}</span>
+                <span style="font-size:11px;flex-shrink:0;color:var(--${r.status === 'filled' ? 'green' : 'red'})">
+                  ${r.status === 'filled' ? '✅ Filled' : '❌ ' + escHtml(r.error || 'Failed')}
+                </span>
+              </li>`).join('') + '</ul>';
+        }
+
+        if (data.ok) legs = []; // clear legs on full success
+      } catch (e) {
+        status.innerHTML = `<div class="alert alert-error">Network error: ${escHtml(e.message)}</div>`;
+      } finally {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        if (legs.length === 0) { recalculate(); renderLegs(); }
+      }
+    }
+
+    // ── Related markets ─────────────────────────────────────────────────────────
+    let _relatedTimer = null;
+    async function loadRelated(ticker) {
+      clearTimeout(_relatedTimer);
+      _relatedTimer = setTimeout(async () => {
+        const section = document.getElementById('relatedSection');
+        const results = document.getElementById('relatedResults');
+        try {
+          const res  = await fetch(`/spreads/related?ticker=${encodeURIComponent(ticker)}`);
+          const data = await res.json();
+          if (!data.results?.length) { section.style.display = 'none'; return; }
+          section.style.display = '';
+          renderMarketList(data.results.slice(0, 8), results);
+        } catch { section.style.display = 'none'; }
+      }, 200);
+    }
+
+    // ── Utilities ───────────────────────────────────────────────────────────────
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function escAttr(s) {
+      return String(s).replace(/'/g, "\\'");
+    }
+
+    // ── Price Alerts ────────────────────────────────────────────────────────────
+    const ALERTS_KEY = 'kalshi_price_alerts';
+    let alerts = JSON.parse(localStorage.getItem(ALERTS_KEY) || '[]');
+
+    function saveAlerts() { localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts)); }
+
+    function renderAlerts() {
+      const el = document.getElementById('alertsList');
+      const permBtn = document.getElementById('alertPermBtn');
+      if (Notification.permission === 'default') permBtn.style.display = '';
+      else permBtn.style.display = 'none';
+
+      if (alerts.length === 0) {
+        el.innerHTML = '<div style="color:var(--text2);padding:6px 0">No alerts set. Add a ticker and price threshold above.</div>';
+        return;
+      }
+      el.innerHTML = alerts.map((a, i) => `
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="font-weight:700;color:var(--text2);flex:0 0 auto">${escHtml(a.ticker)}</span>
+          <span style="color:var(--text2);font-size:11px">YES ${a.dir} ${a.price}¢</span>
+          <span style="margin-left:auto;font-size:10px;color:${a.fired ? 'var(--green)' : 'var(--text2)'}">${a.fired ? '✅ fired' : '⏳ watching'}</span>
+          <button onclick="removeAlert(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;line-height:1;padding:0 2px">×</button>
+        </div>`).join('');
+    }
+
+    function addAlert() {
+      const ticker = document.getElementById('alertTicker').value.trim().toUpperCase();
+      const dir    = document.getElementById('alertDir').value;
+      const price  = parseInt(document.getElementById('alertPrice').value);
+      if (!ticker || !price || price < 1 || price > 99) {
+        document.getElementById('alertsStatus').textContent = 'Enter a valid ticker and price (1–99¢).';
+        return;
+      }
+      alerts.push({ ticker, dir, price, fired: false });
+      saveAlerts();
+      renderAlerts();
+      document.getElementById('alertTicker').value = '';
+      document.getElementById('alertPrice').value  = '';
+      document.getElementById('alertsStatus').textContent = `Alert set: ${ticker} YES ${dir} ${price}¢`;
+    }
+
+    function removeAlert(i) {
+      alerts.splice(i, 1);
+      saveAlerts();
+      renderAlerts();
+    }
+
+    function requestAlertPermission() {
+      Notification.requestPermission().then(p => {
+        document.getElementById('alertsStatus').textContent = p === 'granted' ? 'Notifications enabled.' : 'Permission denied.';
+        renderAlerts();
+      });
+    }
+
+    // Poll prices for active alerts every 30s
+    async function checkAlerts() {
+      const active = alerts.filter(a => !a.fired);
+      if (active.length === 0) return;
+      for (const a of active) {
+        try {
+          const res  = await fetch(`/spreads/search?q=${encodeURIComponent(a.ticker)}`);
+          const data = await res.json();
+          const mkt  = (data.results || []).find(m => m.ticker === a.ticker);
+          if (!mkt) continue;
+          const yesPrice = mkt.yesAsk ?? mkt.last;
+          if (yesPrice == null) continue;
+          const triggered = a.dir === 'above' ? yesPrice >= a.price : yesPrice <= a.price;
+          if (triggered) {
+            a.fired = true;
+            saveAlerts();
+            renderAlerts();
+            const msg = `${a.ticker} YES is now ${yesPrice}¢ (${a.dir} your ${a.price}¢ alert)`;
+            if (Notification.permission === 'granted') {
+              new Notification('Kalshi Price Alert', { body: msg, icon: '/favicon.ico' });
+            } else {
+              document.getElementById('alertsStatus').textContent = '🔔 ' + msg;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    setInterval(checkAlerts, 30 * 1000);
+    // Init
+    renderAlerts();
+    checkAlerts();
+
+    // Pre-fill alert ticker when a market row is right-clicked
+    document.addEventListener('contextmenu', e => {
+      const row = e.target.closest('.spread-result-row');
+      if (!row) return;
+      const ticker = row.querySelector('.spread-result-ticker')?.textContent?.trim();
+      if (ticker) {
+        document.getElementById('alertTicker').value = ticker;
+        e.preventDefault();
+      }
+    });
+
+    // GSAP stagger on newly rendered market rows
+    function gsapStaggerResults(container) {
+      if (typeof gsap === 'undefined') return;
+      const els = container.querySelectorAll('.mkt-row, .bet-card, .player-row, .game-accordion');
+      if (!els.length) return;
+      gsap.from(els, { duration: 0.32, y: 10, opacity: 0, stagger: 0.025, ease: 'power2.out', overwrite: true });
+    }
+
+    // ── Quick Bet ───────────────────────────────────────────────────────────────
+    async function executeQuickBet(ticker, event) {
+      event.stopPropagation();
+      const btn = document.getElementById('qb-' + ticker);
+      if (!btn || btn.disabled) return;
+
+      if (!confirm(`Place 1 YES market order on Kalshi?\n\n${ticker}\n\nThis uses real funds.`)) return;
+
+      btn.disabled = true;
+      btn.textContent = '…';
+
+      try {
+        const res  = await fetch('/spreads/execute', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ legs: [{ ticker, side: 'yes', count: 1, type: 'market' }] }),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          btn.textContent = '✅';
+          btn.style.color = 'var(--green)';
+          btn.title = 'Filled!';
+        } else {
+          btn.textContent = '❌';
+          btn.style.color = 'var(--red)';
+          btn.title = data.message || 'Failed';
+        }
+      } catch (e) {
+        btn.textContent = '❌';
+        btn.style.color = 'var(--red)';
+        btn.title = e.message;
+      }
+
+      setTimeout(() => {
+        if (!btn) return;
+        btn.textContent = '⚡';
+        btn.style.color = '';
+        btn.title = 'Quick bet: 1 contract YES market order';
+        btn.disabled = false;
+      }, 3500);
+    }
+
+    let _flashTimer = null;
+    function showFlash(msg) {
+      const el = document.getElementById('searchStatus');
+      el.style.color = 'var(--yellow)';
+      el.textContent = msg;
+      clearTimeout(_flashTimer);
+      _flashTimer = setTimeout(() => { el.style.color = ''; el.textContent = ''; }, 2500);
+    }
+
+    // ── Wager quick-presets ─────────────────────────────────────────────────────
+    function setWager(amount) {
+      const inp = document.getElementById('investInput');
+      inp.value = amount;
+      recalculate();
+      // Briefly highlight the active preset button
+      document.querySelectorAll('.wager-preset').forEach(b => {
+        b.classList.toggle('active', b.textContent === '$' + amount);
+      });
+    }
+
+    // ── Copy parlay to clipboard ────────────────────────────────────────────────
+    function copyParlay() {
+      if (!legs.length) return;
+      const budget = parseFloat(document.getElementById('investInput')?.value) || 5;
+      const lines  = legs.map((l, i) => {
+        const cost = getLegCost(l);
+        return `${i+1}. ${l.title} — ${l.side.toUpperCase()} @ ${cost != null ? cost + '¢' : '?'}`;
+      });
+      const prices       = legs.map(l => getLegCost(l));
+      const multiplier   = prices.every(p => p != null) ? prices.reduce((m,p) => m*(100/p), 1) : null;
+      const maxPayout    = multiplier != null ? (budget * multiplier).toFixed(2) : '?';
+      const combinedProb = prices.every(p => p != null)
+        ? (prices.reduce((p,c) => p*(c/100), 1) * 100).toFixed(1) : '?';
+      const text = `Parlay — $${budget} wager → $${maxPayout} payout (${combinedProb}% win prob)\n\n${lines.join('\n')}`;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('copyParlayBtn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
+      });
+    }
+
+    // ── Auto-refresh leg prices every 45s ──────────────────────────────────────
+    let _legRefreshTimer = null;
+    let _legPricesStale  = false;
+
+    function startLegRefresh() {
+      clearInterval(_legRefreshTimer);
+      _legRefreshTimer = setInterval(refreshLegPrices, 45000);
+    }
+    function stopLegRefresh() {
+      clearInterval(_legRefreshTimer);
+    }
+
+    async function refreshLegPrices() {
+      if (!legs.length) return;
+      const tickers = legs.map(l => l.ticker);
+      try {
+        const updated = await Promise.allSettled(
+          tickers.map(t => fetch(`/spreads/search?q=${encodeURIComponent(t)}`).then(r => r.json()))
+        );
+        let changed = false;
+        for (let i = 0; i < legs.length; i++) {
+          const r = updated[i];
+          if (r.status !== 'fulfilled') continue;
+          const found = (r.value.results || []).find(m => m.ticker === legs[i].ticker);
+          if (!found) continue;
+          const oldCost = getLegCost(legs[i]);
+          legs[i] = { ...legs[i], yesAsk: found.yesAsk, yesBid: found.yesBid, noAsk: found.noAsk, noBid: found.noBid, last: found.last };
+          const newCost = getLegCost(legs[i]);
+          if (oldCost !== newCost) changed = true;
+        }
+        if (changed) { recalculate(); renderLegs(); showFlash('Prices refreshed'); }
+      } catch {}
+    }
+
+    // Start/stop leg refresh when legs change
+    const _origRenderLegs = renderLegs;
+    // (leg refresh is wired into addLegByTicker and clearLegs via startLegRefresh/stopLegRefresh)
+  </script>
+
+  <!-- Visual upgrade: Vanta NET + GSAP -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.net.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script>
+    if (typeof VANTA !== 'undefined') {
+      VANTA.NET({
+        el: '#vanta-bg',
+        mouseControls: true,
+        touchControls: false,
+        gyroControls: false,
+        color: 0x00ffcc,
+        backgroundColor: 0x020509,
+        points: 16.0,
+        maxDistance: 22.0,
+        spacing: 12.0,
+        showDots: true,
+      });
+    }
+
+    if (typeof gsap !== 'undefined') {
+      gsap.from('.card', { duration: 0.5, y: 18, opacity: 0, stagger: 0.08, ease: 'power2.out', delay: 0.1 });
+    }
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>

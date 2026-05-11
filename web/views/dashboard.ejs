@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="vanta-bg"></div>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger active">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/" class="active">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Dashboard</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Dashboard</h2>
+      <span class="date-label"><%= today %></span>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon">🎯</div>
+        <div class="stat-label">Total Picks</div>
+        <div class="stat-value"><%= stats.total %></div>
+        <div class="stat-sub"><%= stats.pending %> pending</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📈</div>
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value <%= stats.total > 0 && stats.wins / stats.total >= 0.5 ? 'green' : 'red' %>">
+          <%= stats.total > 0 ? ((stats.wins / stats.total) * 100).toFixed(1) : '—' %>%
+        </div>
+        <div class="stat-sub"><%= stats.wins %>W / <%= stats.losses %>L</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">💰</div>
+        <div class="stat-label">Total P&L</div>
+        <div class="stat-value <%= stats.profit >= 0 ? 'green' : 'red' %>">
+          <%= stats.profit >= 0 ? '+' : '' %>$<%= Math.abs(stats.profit).toFixed(2) %>
+        </div>
+        <div class="stat-sub">all time</div>
+      </div>
+    </div>
+
+    <!-- Kalshi Portfolio -->
+    <div class="card portfolio-card" id="portfolioCard" style="display:none;margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">💼</span> Kalshi Portfolio</div>
+        <span id="portfolioTime" style="font-size:10px;color:var(--text2)"></span>
+      </div>
+      <div id="portfolioBody"></div>
+    </div>
+
+    <!-- Today's Picks — full width -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📋</span> Today's Picks</div>
+        <div style="display:flex;align-items:center;gap:0.75rem">
+          <span class="badge-count" id="todayCount"><%= todayPicks.length %></span>
+          <a href="/spreads" class="btn-upset-refresh" style="text-decoration:none;font-size:12px">+ New Bet</a>
+        </div>
+      </div>
+
+      <div class="picks-list" id="todayPicks">
+        <% if (todayPicks.length === 0) { %>
+        <div class="empty-state" id="todayEmpty">
+          <div class="empty-state-icon">📊</div>
+          <p>No bets placed today.</p>
+          <a href="/spreads" style="display:inline-block;margin-top:0.5rem;padding:0.5rem 1.25rem;background:var(--primary);color:#0d1117;border-radius:6px;font-size:13px;font-weight:700;text-decoration:none">Go to Spreads →</a>
+        </div>
+        <% } else { %>
+          <% for (const pick of todayPicks) { %>
+          <%
+            const tierClass = pick.tier === 'Executed' ? 'medium'
+              : pick.tier && pick.tier.toLowerCase().includes('safe') ? 'safe'
+              : pick.tier && pick.tier.toLowerCase().includes('medium') ? 'medium' : 'high';
+            const combinedPct = pick.combinedProb
+              ? (parseFloat(pick.combinedProb) < 1 ? (pick.combinedProb * 100) : parseFloat(pick.combinedProb)).toFixed(1)
+              : null;
+            const wager   = parseFloat(pick.wager ?? pick.totalCost ?? 0);
+            const payout  = parseFloat(pick.totalPayout ?? 0);
+            const profit  = payout - wager;
+          %>
+          <div class="pick-card <%= pick.result === 'win' ? 'win' : pick.result === 'loss' ? 'loss' : '' %>" id="pick-<%= pick.id %>" data-wager="<%= wager %>" data-payout="<%= payout %>">
+            <div class="pick-card-header" onclick="togglePick(this.parentElement)">
+              <span class="tier-pill <%= tierClass %>"><%= pick.tier %></span>
+              <span class="pick-status <%= pick.result || 'pending' %>">
+                <% if (pick.result === 'win') { %>✅ Won +$<%= profit.toFixed(2) %>
+                <% } else if (pick.result === 'loss') { %>❌ Lost -$<%= wager.toFixed(2) %>
+                <% } else { %>⏳ Pending<% } %>
+              </span>
+              <% if (combinedPct) { %><span class="pick-combined"><%= combinedPct %>%</span><% } %>
+              <span class="pick-expand-icon">▾</span>
+              <button class="btn-delete-pick" onclick="event.stopPropagation(); deletePick('<%= pick.id %>', this)" title="Remove pick">🗑️</button>
+            </div>
+            <div class="pick-body">
+              <!-- Wager / Payout prominent row -->
+              <div class="pick-wager-row">
+                <div class="wager-block">
+                  <div class="wager-label">Wagered</div>
+                  <div class="wager-amount">$<%= wager.toFixed(2) %></div>
+                </div>
+                <div class="wager-arrow">→</div>
+                <div class="wager-block">
+                  <div class="wager-label">Max payout</div>
+                  <div class="wager-amount <%= pick.result === 'win' ? 'green' : '' %>">$<%= payout.toFixed(2) %></div>
+                </div>
+                <div class="wager-block">
+                  <div class="wager-label">Profit if hit</div>
+                  <div class="wager-amount green">+$<%= profit.toFixed(2) %></div>
+                </div>
+                <div class="wager-block">
+                  <div class="wager-label">ROI</div>
+                  <div class="wager-amount"><%= pick.roi %>%</div>
+                </div>
+              </div>
+              <ul class="leg-list">
+                <% for (const leg of pick.legs) { %>
+                <li class="leg-item">
+                  <span class="leg-side <%= leg.side %>"><%= leg.side.toUpperCase() %></span>
+                  <span class="leg-title"><%= leg.title || leg.ticker || '' %></span>
+                  <% if (leg.fillPrice != null) { %>
+                    <span style="font-size:11px;color:var(--text2);flex-shrink:0"><%= leg.fillPrice %>¢ × <%= leg.count %></span>
+                  <% } else if (leg.sideProb != null) { %>
+                  <div class="leg-bar-wrap">
+                    <div class="leg-bar-bg"><div class="leg-bar-fill" style="width:<%= leg.sideProb %>%"></div></div>
+                    <div class="leg-prob-label"><%= leg.sideProb %>%</div>
+                  </div>
+                  <% } %>
+                  <% if (leg.result) { %><span class="leg-result-icon"><%= leg.result === 'win' ? '✅' : '❌' %></span><% } %>
+                </li>
+                <% } %>
+              </ul>
+              <% if (!pick.result) { %>
+              <div class="result-btns">
+                <button class="btn-result win-btn"  onclick="markPickResult('<%= pick.id %>', 'win',  event)">✅ Won</button>
+                <button class="btn-result loss-btn" onclick="markPickResult('<%= pick.id %>', 'loss', event)">❌ Lost</button>
+              </div>
+              <% } %>
+            </div>
+          </div>
+          <% } %>
+        <% } %>
+      </div>
+    </div>
+
+    <!-- Live Sports Intel -->
+    <div class="card" id="upsetCard">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">🎮</span> Live Sports Intel</div>
+        <button class="btn-upset-refresh" id="upsetRefreshBtn" onclick="loadUpsets()">Check Now</button>
+      </div>
+      <div class="upset-tab-bar" id="upsetTabBar" style="display:none">
+        <button class="upset-tab-btn active" data-tab="live"   onclick="switchUpsetTab('live',   this)">📺 Live</button>
+        <button class="upset-tab-btn"         data-tab="upsets" onclick="switchUpsetTab('upsets', this)">🚨 Upsets</button>
+        <button class="upset-tab-btn"         data-tab="hot"   onclick="switchUpsetTab('hot',    this)">🔥 Hot</button>
+      </div>
+      <div id="tab-live"   class="upset-tab-pane" style="display:none"></div>
+      <div id="tab-upsets" class="upset-tab-pane" style="display:none"></div>
+      <div id="tab-hot"    class="upset-tab-pane" style="display:none"></div>
+      <div id="upsetInitial">
+        <div class="empty-state">
+          <div class="empty-state-icon">🎲</div>
+          <p>Click "Check Now" to see live scores, upset opportunities, and active game markets.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Performance by tier -->
+    <% if (Object.keys(stats.byTier).length > 0) { %>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📊</span> Performance by Tier</div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Tier</th><th>W</th><th>L</th><th>Hit %</th><th>P&L</th></tr></thead>
+        <tbody>
+          <% for (const [tier, t] of Object.entries(stats.byTier)) { %>
+          <% const total = t.wins + t.losses; const pct = total > 0 ? ((t.wins / total) * 100).toFixed(0) : '—'; %>
+          <%
+            const tc = tier === 'Executed' ? 'medium'
+              : tier.toLowerCase().includes('safe') ? 'safe'
+              : tier.toLowerCase().includes('medium') ? 'medium' : 'high';
+          %>
+          <tr>
+            <td><span class="tier-pill <%= tc %>"><%= tier %></span></td>
+            <td class="green"><%= t.wins %></td>
+            <td class="red"><%= t.losses %></td>
+            <td><%= pct %>%</td>
+            <td class="<%= t.profit >= 0 ? 'green' : 'red' %>">
+              <%= t.profit >= 0 ? '+' : '' %>$<%= Math.abs(t.profit).toFixed(2) %>
+            </td>
+          </tr>
+          <% } %>
+        </tbody>
+      </table>
+    </div>
+    <% } %>
+
+    <!-- P&L chart -->
+    <% const pnl = JSON.parse(pnlSeries); %>
+    <% if (pnl.length > 1) { %>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📉</span> Cumulative P&L</div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="pnlChart"></canvas>
+      </div>
+    </div>
+    <% } %>
+
+    <!-- Recent history -->
+    <% if (recent.length > 0) { %>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">🕐</span> Recent History</div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Tier</th><th>Legs</th><th>Wagered</th><th>Result</th></tr></thead>
+        <tbody>
+          <% for (const p of recent) { %>
+          <%
+            const rc = p.tier === 'Executed' ? 'medium'
+              : p.tier && p.tier.toLowerCase().includes('safe') ? 'safe'
+              : p.tier && p.tier.toLowerCase().includes('medium') ? 'medium' : 'high';
+            const pw = parseFloat(p.wager ?? p.totalCost ?? 0);
+            const pp = parseFloat(p.totalPayout ?? 0);
+          %>
+          <tr>
+            <td class="muted"><%= p.date %></td>
+            <td><span class="tier-pill <%= rc %>"><%= p.tier %></span></td>
+            <td><%= p.legs.length %></td>
+            <td>$<%= pw.toFixed(2) %></td>
+            <td class="<%= p.result === 'win' ? 'green' : 'red' %>">
+              <%= p.result === 'win'
+                ? '+$' + (pp - pw).toFixed(2)
+                : '-$' + pw.toFixed(2) %>
+            </td>
+          </tr>
+          <% } %>
+        </tbody>
+      </table>
+    </div>
+    <% } %>
+  </main>
+
+  <script>
+    function escHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function togglePick(card) {
+      card.classList.toggle('expanded');
+    }
+
+    async function deletePick(id, btn) {
+      if (!confirm('Remove this pick?')) return;
+      btn.disabled = true;
+      try {
+        const res  = await fetch(`/picks/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          const card = document.getElementById('pick-' + id);
+          card.style.transition = 'opacity 0.2s, transform 0.2s';
+          card.style.opacity = '0';
+          card.style.transform = 'translateX(-10px)';
+          setTimeout(() => {
+            card.remove();
+            const remaining = document.querySelectorAll('#todayPicks .pick-card').length;
+            document.getElementById('todayCount').textContent = remaining;
+            if (remaining === 0) {
+              document.getElementById('todayPicks').innerHTML =
+                '<div class="empty-state"><div class="empty-state-icon">📊</div><p>No bets placed today.</p><a href="/spreads" style="display:inline-block;margin-top:0.5rem;padding:0.5rem 1.25rem;background:var(--primary);color:#0d1117;border-radius:6px;font-size:13px;font-weight:700;text-decoration:none">Go to Spreads →</a></div>';
+            }
+          }, 200);
+        }
+      } catch { btn.disabled = false; }
+    }
+
+    async function markPickResult(id, result, event) {
+      event.stopPropagation();
+      const card = document.getElementById('pick-' + id);
+      if (!card) return;
+      try {
+        const res  = await fetch(`/picks/${id}/result`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ result }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error('not found');
+
+        card.classList.remove('win', 'loss');
+        card.classList.add(result);
+
+        const wager  = parseFloat(card.dataset.wager  || 0);
+        const payout = parseFloat(card.dataset.payout || 0);
+        const statusEl = card.querySelector('.pick-status');
+        if (statusEl) {
+          statusEl.className  = 'pick-status ' + result;
+          statusEl.textContent = result === 'win'
+            ? `✅ Won +$${(payout - wager).toFixed(2)}`
+            : `❌ Lost -$${wager.toFixed(2)}`;
+        }
+        const btnDiv = card.querySelector('.result-btns');
+        if (btnDiv) btnDiv.remove();
+
+        if (result === 'win' && typeof confetti === 'function') {
+          confetti({ particleCount: 140, spread: 80, origin: { y: 0.55 }, colors: ['#00d4a0','#5865f2','#23d18b','#ffffff','#f5a623'] });
+        }
+      } catch { alert('Failed to save result.'); }
+    }
+
+    // ── P&L chart ───────────────────────────────────────────────────────────────
+    const pnlData = <%- pnlSeries %>;
+    if (pnlData.length > 1) {
+      const ctx     = document.getElementById('pnlChart').getContext('2d');
+      const lastVal = pnlData[pnlData.length - 1]?.value ?? 0;
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: pnlData.map(d => d.date),
+          datasets: [{
+            label: 'Cumulative P&L ($)',
+            data:  pnlData.map(d => d.value),
+            borderColor:     lastVal >= 0 ? '#23d18b' : '#f04f5e',
+            backgroundColor: lastVal >= 0 ? 'rgba(35,209,139,0.08)' : 'rgba(240,79,94,0.08)',
+            borderWidth: 2, pointRadius: 3, tension: 0.3, fill: true,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#4a5568', maxTicksLimit: 8 }, grid: { color: '#1e2a42' } },
+            y: { ticks: { color: '#4a5568', callback: v => '$' + v }, grid: { color: '#1e2a42' } },
+          },
+        },
+      });
+    }
+
+    // ── Kalshi Portfolio ────────────────────────────────────────────────────────
+    async function loadPortfolio() {
+      try {
+        const res  = await fetch('/api/portfolio');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const card = document.getElementById('portfolioCard');
+        const body = document.getElementById('portfolioBody');
+        const time = document.getElementById('portfolioTime');
+        if (!card) return;
+
+        const bal      = data.balance || {};
+        const rawBal   = bal.balance ?? bal.available_balance ?? null;
+        const dollars  = rawBal !== null ? (rawBal / 100) : null;
+        const positions = data.positions || [];
+        if (dollars === null && positions.length === 0) return;
+
+        card.style.display = '';
+        let html = '<div class="portfolio-summary">';
+        if (dollars !== null) {
+          html += `<div class="portfolio-bal">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);margin-bottom:4px">Available Balance</div>
+            <div style="font-size:28px;font-weight:800;color:var(--green)">$${dollars.toFixed(2)}</div>
+          </div>`;
+        }
+        html += '</div>';
+
+        if (positions.length > 0) {
+          html += `<div style="margin-top:1rem">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);margin-bottom:8px">Open Positions</div>
+            <ul class="leg-list">
+              ${positions.slice(0, 12).map(p => {
+                const side = p.side || 'yes';
+                const qty  = p.quantity_owned ?? p.total_traded ?? 0;
+                const cost = p.average_price != null ? `${p.average_price}¢` : '';
+                return `<li class="leg-item">
+                  <span class="leg-side ${side}">${side.toUpperCase()}</span>
+                  <span class="leg-title">${escHtml(p.market_ticker || p.ticker || '')}</span>
+                  <span style="font-size:11px;color:var(--text2);flex-shrink:0">${qty} contracts${cost ? ' @ ' + cost : ''}</span>
+                </li>`;
+              }).join('')}
+            </ul>
+          </div>`;
+        } else {
+          html += '<p style="font-size:12px;color:var(--text2);margin-top:0.5rem">No open positions.</p>';
+        }
+
+        body.innerHTML = html;
+        if (time) time.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } catch {}
+    }
+    loadPortfolio();
+
+    // ── Live Sports Intel ───────────────────────────────────────────────────────
+    function switchUpsetTab(tab, btn) {
+      document.querySelectorAll('.upset-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.upset-tab-pane').forEach(p => p.style.display = 'none');
+      document.getElementById('tab-' + tab).style.display = '';
+    }
+
+    let _arTimer = null, _arCountdown = 0, _lastUpsetFetch = 0, _notifGranted = false;
+    const AR_SECONDS = 90;
+
+    function startAutoRefresh() {
+      if (_arTimer) clearInterval(_arTimer);
+      _arCountdown = AR_SECONDS;
+      _arTimer = setInterval(() => {
+        if (document.visibilityState === 'hidden') return;
+        _arCountdown--;
+        const btn = document.getElementById('upsetRefreshBtn');
+        if (btn && !btn.disabled) btn.textContent = `Refresh (${_arCountdown}s)`;
+        if (_arCountdown <= 0) { _arCountdown = AR_SECONDS; silentRefresh(); }
+      }, 1000);
+    }
+
+    async function silentRefresh() {
+      if (Date.now() - _lastUpsetFetch < 15000) return;
+      await fetchAndRenderUpsets(false);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && _arTimer && _lastUpsetFetch > 0) {
+        if ((Date.now() - _lastUpsetFetch) / 1000 >= AR_SECONDS) silentRefresh();
+      }
+    });
+
+    async function loadUpsets() {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().then(p => { _notifGranted = p === 'granted'; });
+      }
+      _notifGranted = Notification.permission === 'granted';
+      const btn    = document.getElementById('upsetRefreshBtn');
+      const init   = document.getElementById('upsetInitial');
+      btn.disabled    = true;
+      btn.textContent = 'Scanning…';
+      if (init && init.style.display !== 'none') {
+        init.innerHTML = '<div class="empty-state"><div class="empty-state-icon" style="font-size:24px;animation:spin 1s linear infinite">⟳</div><p>Fetching live scores and game prices…</p></div>';
+      }
+      await fetchAndRenderUpsets(true);
+      startAutoRefresh();
+    }
+
+    async function fetchAndRenderUpsets(showLoading) {
+      const btn    = document.getElementById('upsetRefreshBtn');
+      const init   = document.getElementById('upsetInitial');
+      const tabBar = document.getElementById('upsetTabBar');
+      _lastUpsetFetch = Date.now();
+
+      try {
+        const res  = await fetch('/upsets');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+
+        const upsets     = data.upsets     || [];
+        const liveGames  = data.liveGames  || [];
+        const hotMarkets = data.hotMarkets || [];
+
+        if (init) init.style.display = 'none';
+        tabBar.style.display = '';
+
+        const activeTab = document.querySelector('.upset-tab-btn.active')?.dataset?.tab;
+
+        // Live tab
+        const livePane = document.getElementById('tab-live');
+        if (liveGames.length === 0) {
+          livePane.innerHTML = '<div class="empty-state" style="padding:1.5rem 1rem"><div class="empty-state-icon" style="font-size:22px">📺</div><p>No games scheduled today.</p></div>';
+        } else {
+          livePane.innerHTML = '<div class="live-game-list">' + liveGames.map(g => {
+            const homeWin = g.home.score > g.away.score && g.isLive;
+            const awayWin = g.away.score > g.home.score && g.isLive;
+            const homeK   = (g.kalshi || []).find(k => k.isHome);
+            const awayK   = (g.kalshi || []).find(k => k.isAway);
+            const status  = g.isLive
+              ? `<span class="live-badge">● LIVE</span> ${escHtml(g.statusDetail)}`
+              : escHtml(g.statusDetail || 'Upcoming');
+            return `<div class="live-game-item fade-in">
+              <div class="live-game-header">
+                <span class="league-badge ${g.league}">${escHtml(g.leagueName)}</span>
+                <span class="live-status">${status}</span>
+              </div>
+              <div class="live-game-scores">
+                <div class="live-team ${awayWin ? 'winning' : homeWin ? 'losing' : ''}">
+                  <span class="live-team-abbr">${escHtml(g.away.abbr)}</span>
+                  <span class="live-team-name">${escHtml(g.away.shortName)}</span>
+                  ${awayK?.yesPrice != null ? `<span class="live-kalshi-price">${awayK.yesPrice}¢</span>` : ''}
+                  <span class="live-score ${awayWin ? 'winning-score' : ''}">${g.away.score}</span>
+                </div>
+                <span class="live-vs">vs</span>
+                <div class="live-team ${homeWin ? 'winning' : awayWin ? 'losing' : ''}">
+                  <span class="live-team-abbr">${escHtml(g.home.abbr)}</span>
+                  <span class="live-team-name">${escHtml(g.home.shortName)}</span>
+                  ${homeK?.yesPrice != null ? `<span class="live-kalshi-price">${homeK.yesPrice}¢</span>` : ''}
+                  <span class="live-score ${homeWin ? 'winning-score' : ''}">${g.home.score}</span>
+                </div>
+              </div>
+            </div>`;
+          }).join('') + '</div>';
+        }
+
+        // Upsets tab
+        document.getElementById('tab-upsets').innerHTML = upsets.length === 0
+          ? '<div class="empty-state" style="padding:1.5rem 1rem"><div class="empty-state-icon" style="font-size:22px">😴</div><p>No significant price shifts right now.</p></div>'
+          : '<div class="upset-list">' + upsets.map(u => {
+              const arrow    = u.shift > 0 ? '📈' : '📉';
+              const shiftStr = u.shift > 0 ? `+${u.shift}¢` : `${u.shift}¢`;
+              const shiftColor = u.shift > 0 ? 'var(--green)' : 'var(--red)';
+              return `<div class="upset-item fade-in">
+                <div class="upset-arrow">${arrow}</div>
+                <div class="upset-info">
+                  <div class="upset-title">${escHtml(u.title)}</div>
+                  <div class="upset-meta">Was <strong>${u.openProb}%</strong> → Now <strong>${u.upsetProb}%</strong></div>
+                </div>
+                <span class="upset-side">${u.upsetSide.toUpperCase()}</span>
+                <div class="upset-stats">
+                  <div class="upset-shift" style="color:${shiftColor}">${shiftStr}</div>
+                  <div class="upset-roi">ROI +${u.roi}%</div>
+                </div>
+              </div>`;
+            }).join('') + '</div>';
+
+        // Hot tab
+        document.getElementById('tab-hot').innerHTML = hotMarkets.length === 0
+          ? '<div class="empty-state" style="padding:1.5rem 1rem"><div class="empty-state-icon" style="font-size:22px">🔥</div><p>No high-volume markets right now.</p></div>'
+          : '<div class="upset-list">' + hotMarkets.map(m => `
+              <div class="upset-item fade-in">
+                <div class="upset-arrow">🔥</div>
+                <div class="upset-info">
+                  <div class="upset-title">${escHtml(m.title)}</div>
+                  <div class="upset-meta">Volume ${m.volume.toLocaleString()} · OI ${m.openInterest.toLocaleString()}</div>
+                </div>
+                ${m.yesPrice != null ? `<span class="upset-side" style="background:rgba(0,212,160,0.12);color:var(--primary)">${m.yesPrice}¢ YES</span>` : ''}
+                <div class="upset-stats"><div class="upset-shift" style="color:var(--yellow)">Active</div></div>
+              </div>`).join('') + '</div>';
+
+        const hasLive  = liveGames.some(g => g.isLive);
+        const targetTab = activeTab || (hasLive ? 'live' : upsets.length ? 'upsets' : 'live');
+        const tabBtn    = document.querySelector(`[data-tab="${targetTab}"]`);
+        if (tabBtn) switchUpsetTab(targetTab, tabBtn);
+
+        if (!_notifGranted || !upsets.length || document.visibilityState === 'visible') return;
+        new Notification('🚨 Live Upset', { body: `${upsets[0].title} — ${upsets[0].upsetSide.toUpperCase()} · ROI +${upsets[0].roi}%` });
+
+      } catch (e) {
+        if (showLoading && init) {
+          init.style.display = '';
+          init.innerHTML = `<p style="color:var(--red);font-size:13px;text-align:center;padding:1rem">Error: ${escHtml(e.message)}</p>`;
+        }
+      } finally {
+        if (showLoading && btn) {
+          btn.disabled    = false;
+          btn.textContent = _arCountdown > 0 ? `Refresh (${_arCountdown}s)` : 'Refresh';
+        }
+      }
+    }
+  </script>
+
+  <!-- Visual upgrade: Vanta NET + GSAP + confetti -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.net.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+  <script>
+    // Vanta NET — black bg so mix-blend-mode:screen makes it transparent
+    if (typeof VANTA !== 'undefined') {
+      VANTA.NET({
+        el: '#vanta-bg',
+        mouseControls: true,
+        touchControls: false,
+        gyroControls: false,
+        color: 0x00ffcc,
+        backgroundColor: 0x020509,
+        points: 16.0,
+        maxDistance: 22.0,
+        spacing: 12.0,
+        showDots: true,
+      });
+    }
+
+    // GSAP entrance animations
+    if (typeof gsap !== 'undefined') {
+      gsap.from('.stat-card', { duration: 0.55, y: 22, opacity: 0, stagger: 0.09, ease: 'power2.out', delay: 0.05 });
+      gsap.from('.card', { duration: 0.5, y: 16, opacity: 0, stagger: 0.07, ease: 'power2.out', delay: 0.15 });
+      gsap.from('.pick-card', { duration: 0.45, x: -18, opacity: 0, stagger: 0.07, ease: 'power2.out', delay: 0.25 });
+
+      // Number count-up on stat values
+      document.querySelectorAll('.stat-value').forEach(el => {
+        const raw = el.textContent.trim();
+        const m = raw.match(/[\d.]+/);
+        if (!m) return;
+        const target = parseFloat(m[0]);
+        if (isNaN(target) || target === 0) return;
+        const prefix = raw.slice(0, m.index);
+        const suffix = raw.slice(m.index + m[0].length);
+        const isInt = !m[0].includes('.');
+        const obj = { n: 0 };
+        gsap.to(obj, {
+          n: target,
+          duration: 1.2,
+          ease: 'power3.out',
+          delay: 0.3,
+          onUpdate() { el.textContent = prefix + (isInt ? Math.round(obj.n) : obj.n.toFixed(1)) + suffix; },
+        });
+      });
+    }
+  </script>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>
