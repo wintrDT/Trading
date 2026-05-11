@@ -8,7 +8,10 @@ const DB_PATH = path.join(__dirname, '../../bot/data/options.db');
 function getDb() {
   try {
     return new Database(DB_PATH, { readonly: true, fileMustExist: true });
-  } catch {
+  } catch (err) {
+    if (err.code !== 'SQLITE_CANTOPEN') {
+      console.error('[options] DB open error:', err.message);
+    }
     return null;
   }
 }
@@ -19,6 +22,7 @@ router.get('/', requireAuth, (req, res) => {
   let closedTrades = [];
   let recentScans = [];
   let accountSnap = null;
+  let botOnline = false;
 
   if (db) {
     try {
@@ -34,6 +38,9 @@ router.get('/', requireAuth, (req, res) => {
       accountSnap = db.prepare(
         "SELECT * FROM account_snapshots ORDER BY id DESC LIMIT 1"
       ).get() || null;
+      botOnline = true;
+    } catch (err) {
+      console.error('[options] DB query error:', err.message);
     } finally {
       db.close();
     }
@@ -45,7 +52,7 @@ router.get('/', requireAuth, (req, res) => {
     closedTrades,
     recentScans,
     accountSnap,
-    botOnline: db !== null,
+    botOnline,
   });
 });
 
