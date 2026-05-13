@@ -10,11 +10,13 @@ from apscheduler.triggers.cron import CronTrigger
 from bot.futures.config import (
     FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
     TIMEZONE, MARKET_OPEN, MARKET_CLOSE, ORB_END,
+    AV_API_KEY,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_setting,
-    insert_snapshot,
+    insert_snapshot, get_today_event_times,
 )
+from bot.futures.news import fetch_and_store_news
 from bot.futures.tradovate_client import TradovateClient
 from bot.futures.strategy import VWAPState, ORBState, calc_vwap, check_vwap_signal, check_orb_signal
 from bot.futures.risk import is_daily_loss_limit_hit
@@ -72,6 +74,14 @@ def job_scan(client):
         return
 
     sim = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
+
+    today_date  = datetime.now(ET).strftime('%Y-%m-%d')
+    now_iso     = datetime.now(ET).isoformat()
+    event_times = get_today_event_times(FUTURES_DB_PATH, today_date)
+    from bot.futures.risk import is_news_blackout
+    if is_news_blackout(now_iso, RISK_RULES['news_blackout_minutes'], event_times):
+        log.info('News blackout active — skipping scan')
+        return
 
     try:
         prices = client.get_current_prices(SYMBOLS, timeout=20)
@@ -158,6 +168,13 @@ def job_snapshot(client):
         log.exception('Snapshot error')
 
 
+def job_news():
+    try:
+        fetch_and_store_news(FUTURES_DB_PATH, AV_API_KEY)
+    except Exception:
+        log.exception('News fetch error')
+
+
 def main():
     init_db(FUTURES_DB_PATH)
     _reset_daily_state()
@@ -191,6 +208,8 @@ def main():
     scheduler.add_job(_manage,   IntervalTrigger(seconds=15, timezone=ET), id='manage')
     scheduler.add_job(_snapshot, CronTrigger(day_of_week='mon-fri', hour='10-15', minute=0, timezone=ET), id='snapshot')
     scheduler.add_job(_reset,    CronTrigger(day_of_week='mon-fri', hour=9, minute=29, timezone=ET), id='reset')
+    scheduler.add_job(job_news,  CronTrigger(day_of_week='mon-fri', hour='8-16', minute=0, timezone=ET), id='news')
+    scheduler.add_job(job_news,  'date', run_date=datetime.now(ET), id='news_startup')
 
     log.info('Futures bot running [%s]. Ctrl+C to stop.', 'DEMO' if tv_demo else 'LIVE')
     try:

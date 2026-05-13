@@ -38,6 +38,7 @@ TV_PASSWORD  = os.environ.get('TV_PASSWORD', '')
 TV_CID       = os.environ.get('TV_CID', '')
 TV_SEC       = os.environ.get('TV_SEC', '')
 TV_DEVICE_ID = os.environ.get('TV_DEVICE_ID', 'sharp-bot-futures-001')
+AV_API_KEY   = os.environ.get('AV_API_KEY', '')
 TV_DEMO      = os.environ.get('TV_DEMO', 'true').lower() == 'true'
 
 BASE_URL = 'https://demo.tradovateapi.com/v1' if TV_DEMO else 'https://live.tradovateapi.com/v1'

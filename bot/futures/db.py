@@ -56,6 +56,19 @@ CREATE TABLE IF NOT EXISTS futures_settings (
 )
 """
 
+_CREATE_NEWS = """
+CREATE TABLE IF NOT EXISTS futures_news (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetched_ts TEXT,
+    news_type TEXT,
+    title TEXT,
+    event_ts TEXT,
+    impact TEXT,
+    sentiment TEXT,
+    url TEXT
+)
+"""
+
 
 @contextlib.contextmanager
 def _conn(db_path):
@@ -78,6 +91,7 @@ def init_db(db_path):
         conn.execute(_CREATE_SIGNALS)
         conn.execute(_CREATE_SNAPSHOTS)
         conn.execute(_CREATE_SETTINGS)
+        conn.execute(_CREATE_NEWS)
 
 
 def get_setting(db_path, key, default=None):
@@ -186,3 +200,36 @@ def get_all_time_pnl(db_path):
             "SELECT COALESCE(SUM(pnl),0) as total FROM futures_trades WHERE status='closed'"
         ).fetchone()
         return float(row['total'])
+
+
+def upsert_news(db_path, items: list):
+    """Replace today's news records with fresh fetch."""
+    if not items:
+        return
+    today = items[0]['fetched_ts'][:10]
+    with _conn(db_path) as conn:
+        conn.execute("DELETE FROM futures_news WHERE fetched_ts LIKE ?", (f"{today}%",))
+        for item in items:
+            conn.execute(
+                "INSERT INTO futures_news (fetched_ts, news_type, title, event_ts, impact, sentiment, url) "
+                "VALUES (:fetched_ts, :news_type, :title, :event_ts, :impact, :sentiment, :url)",
+                item,
+            )
+
+
+def get_recent_news(db_path, limit=20):
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM futures_news ORDER BY event_ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_today_event_times(db_path, date_str: str) -> list:
+    """Return ISO datetimes of high-impact economic events today."""
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT event_ts FROM futures_news WHERE news_type='event' AND impact='High' AND event_ts LIKE ?",
+            (f"{date_str}%",)
+        ).fetchall()
+        return [r['event_ts'] for r in rows]
