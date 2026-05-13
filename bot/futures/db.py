@@ -116,20 +116,26 @@ def insert_trade(db_path, trade):
 
 def update_trade_price(db_path, trade_id, current_price):
     with _conn(db_path) as conn:
-        conn.execute("UPDATE futures_trades SET current_price=? WHERE id=?", (current_price, trade_id))
+        cur = conn.execute("UPDATE futures_trades SET current_price=? WHERE id=?", (current_price, trade_id))
+        if cur.rowcount == 0:
+            raise ValueError(f"No futures trade with id={trade_id}")
 
 
 def update_trade_closed(db_path, trade_id, close_price, close_reason, close_ts, pnl):
     with _conn(db_path) as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE futures_trades SET close_price=?,close_ts=?,close_reason=?,status='closed',pnl=? WHERE id=?",
             (close_price, close_ts, close_reason, pnl, trade_id),
         )
+        if cur.rowcount == 0:
+            raise ValueError(f"No futures trade with id={trade_id}")
 
 
 def mark_signal_traded(db_path, signal_id):
     with _conn(db_path) as conn:
-        conn.execute("UPDATE futures_signals SET traded=1 WHERE id=?", (signal_id,))
+        cur = conn.execute("UPDATE futures_signals SET traded=1 WHERE id=?", (signal_id,))
+        if cur.rowcount == 0:
+            raise ValueError(f"No futures signal with id={signal_id}")
 
 
 def get_open_trades(db_path):
