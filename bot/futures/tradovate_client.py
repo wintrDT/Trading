@@ -151,8 +151,9 @@ class TradovateClient:
                 raise RuntimeError(f'WS auth failed: {auth_data}')
             for i, sym in enumerate(symbols, start=1):
                 await ws.send(f'md/subscribequote\n{i}\n\n{json.dumps({"symbol": sym})}')
-            deadline = asyncio.get_event_loop().time() + timeout
-            while asyncio.get_event_loop().time() < deadline:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while loop.time() < deadline:
                 try:
                     msg = await asyncio.wait_for(ws.recv(), timeout=5)
                 except asyncio.TimeoutError:
