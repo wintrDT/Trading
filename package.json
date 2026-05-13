@@ -1,0 +1,32 @@
+{
+  "name": "parlay-bot",
+  "version": "1.0.0",
+  "description": "Discord prediction market & parlay bot for NBA, NFL, MLB, NCAA",
+  "main": "bot.js",
+  "scripts": {
+    "start": "concurrently --names \"WEB,OPTIONS,FUTURES\" --prefix-colors \"cyan,green,magenta\" \"node web/server.js\" \"python -m bot.main\" \"python -m bot.futures.main\"",
+    "web": "node web/server.js",
+    "bot": "node bot.js",
+    "dev": "nodemon web/server.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "axios": "^1.7.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.9.0",
+    "concurrently": "^9.2.1",
+    "discord.js": "^14.15.0",
+    "dotenv": "^16.4.0",
+    "ejs": "^5.0.2",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "node-cron": "^4.2.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
