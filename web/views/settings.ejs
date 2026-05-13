@@ -23,9 +23,10 @@
         </div>
       </div>
       <div class="nav-dropdown">
-        <button class="nav-dropdown-trigger">Options Trading <span class="dd-arrow">▼</span></button>
+        <button class="nav-dropdown-trigger">Trading <span class="dd-arrow">▼</span></button>
         <div class="nav-dropdown-menu">
-          <a href="/options">Dashboard</a>
+          <a href="/options">Options</a>
+          <a href="/futures">Futures</a>
         </div>
       </div>
       <a href="/settings" class="active">Settings</a>
@@ -75,6 +76,124 @@
           <span style="margin-left:auto;color:var(--yellow);font-size:13px;font-weight:700">Not set</span>
         <% } %>
       </div>
+    </div>
+
+    <!-- Options Bot Trading Mode -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">⚙️</span> Options Bot Mode</div>
+        <span style="font-size:12px;font-weight:700;<%= tradingMode === 'sim' ? 'color:var(--yellow)' : 'color:var(--green)' %>">
+          <%= tradingMode === 'sim' ? '🟡 Simulation' : '🟢 Production' %>
+        </span>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1.25rem;line-height:1.6">
+        <strong>Production</strong> — bot places real trades on your Tastytrade account.<br>
+        <strong>Simulation</strong> — bot scans and records trades but sends nothing to Tastytrade. Use this to test the strategy with no real money at risk.
+      </p>
+      <div style="display:flex;gap:10px">
+        <form method="POST" action="/settings/trading-mode">
+          <input type="hidden" name="mode" value="live">
+          <button type="submit" class="btn-sm" style="font-size:12px;padding:10px 20px;<%= tradingMode === 'live' ? 'background:var(--green);color:#000;font-weight:700' : '' %>">
+            Production Mode
+          </button>
+        </form>
+        <form method="POST" action="/settings/trading-mode">
+          <input type="hidden" name="mode" value="sim">
+          <button type="submit" class="btn-sm" style="font-size:12px;padding:10px 20px;<%= tradingMode === 'sim' ? 'background:var(--yellow);color:#000;font-weight:700' : '' %>">
+            Simulation Mode
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Futures Bot Trading Mode -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📈</span> Futures Bot Mode</div>
+        <span style="font-size:12px;font-weight:700;<%= futuresTradingMode === 'sim' ? 'color:var(--yellow)' : 'color:var(--green)' %>">
+          <%= futuresTradingMode === 'sim' ? '🟡 Simulation' : '🟢 Production' %>
+        </span>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1.25rem;line-height:1.6">
+        <strong>Production</strong> — bot places real futures trades on your Tradovate account.<br>
+        <strong>Simulation</strong> — bot scans and records signals but sends no real orders. Recommended until credentials are verified.
+      </p>
+      <div style="display:flex;gap:10px">
+        <form method="POST" action="/settings/futures-trading-mode">
+          <input type="hidden" name="mode" value="live">
+          <button type="submit" class="btn-sm" style="font-size:12px;padding:10px 20px;<%= futuresTradingMode === 'live' ? 'background:var(--green);color:#000;font-weight:700' : '' %>">
+            Production Mode
+          </button>
+        </form>
+        <form method="POST" action="/settings/futures-trading-mode">
+          <input type="hidden" name="mode" value="sim">
+          <button type="submit" class="btn-sm" style="font-size:12px;padding:10px 20px;<%= futuresTradingMode === 'sim' ? 'background:var(--yellow);color:#000;font-weight:700' : '' %>">
+            Simulation Mode
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Tradovate Credentials -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">🔗</span> Tradovate Credentials</div>
+        <% if (hasTvPassword && tvUsername) { %><span style="font-size:12px;color:var(--green)">✅ Saved</span><% } %>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.6">
+        Your Tradovate login and API app credentials. Get your Client ID and Secret at
+        <strong>tradovate.com → Account → API Access</strong>.
+        Leave password/secret blank to keep the existing saved value.
+      </p>
+      <form method="POST" action="/settings/futures-tradovate">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:10px">
+            <div style="flex:1">
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Username</label>
+              <input type="text" name="tv_username" class="gen-input" style="width:100%;font-size:13px"
+                     value="<%= tvUsername %>" placeholder="Tradovate username" autocomplete="off">
+            </div>
+            <div style="flex:1">
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Password</label>
+              <input type="password" name="tv_password" class="gen-input" style="width:100%;font-size:13px"
+                     placeholder="<%= hasTvPassword ? '●●●●●●●● (saved)' : 'Tradovate password' %>" autocomplete="new-password">
+            </div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1">
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Client ID (CID)</label>
+              <input type="text" name="tv_cid" class="gen-input" style="width:100%;font-size:13px"
+                     value="<%= tvCid %>" placeholder="From Dev Portal" autocomplete="off">
+            </div>
+            <div style="flex:1">
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Client Secret (SEC)</label>
+              <input type="password" name="tv_sec" class="gen-input" style="width:100%;font-size:13px"
+                     placeholder="<%= hasTvSec ? '●●●●●●●● (saved)' : 'Client secret' %>" autocomplete="new-password">
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:flex-end">
+            <div style="flex:1">
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Device ID (optional)</label>
+              <input type="text" name="tv_device_id" class="gen-input" style="width:100%;font-size:13px"
+                     value="<%= tvDeviceId %>" placeholder="sharp-bot-futures-001" autocomplete="off">
+            </div>
+            <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+              <label style="font-size:11px;color:var(--text2)">Account Type</label>
+              <div style="display:flex;gap:8px">
+                <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" name="tv_demo" value="true" <%= tvDemo === 'true' ? 'checked' : '' %>> Demo
+                </label>
+                <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" name="tv_demo" value="false" <%= tvDemo !== 'true' ? 'checked' : '' %>> Live
+                </label>
+              </div>
+            </div>
+          </div>
+          <div>
+            <button type="submit" class="btn-sm" style="font-size:12px;padding:8px 14px">Save Tradovate Credentials</button>
+          </div>
+        </div>
+      </form>
     </div>
 
     <!-- Option 1: API Key (recommended for Google users) -->

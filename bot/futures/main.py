@@ -10,7 +10,6 @@ from apscheduler.triggers.cron import CronTrigger
 from bot.futures.config import (
     FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
     TIMEZONE, MARKET_OPEN, MARKET_CLOSE, ORB_END,
-    TV_USERNAME, TV_PASSWORD, TV_CID, TV_SEC, TV_DEVICE_ID, TV_DEMO,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_setting,
@@ -163,8 +162,19 @@ def main():
     init_db(FUTURES_DB_PATH)
     _reset_daily_state()
 
-    client = TradovateClient(TV_USERNAME, TV_PASSWORD, TV_CID, TV_SEC,
-                             demo=TV_DEMO, device_id=TV_DEVICE_ID)
+    tv_username  = get_setting(FUTURES_DB_PATH, 'tv_username',  '')
+    tv_password  = get_setting(FUTURES_DB_PATH, 'tv_password',  '')
+    tv_cid       = get_setting(FUTURES_DB_PATH, 'tv_cid',       '')
+    tv_sec       = get_setting(FUTURES_DB_PATH, 'tv_sec',       '')
+    tv_device_id = get_setting(FUTURES_DB_PATH, 'tv_device_id', 'sharp-bot-futures-001')
+    tv_demo      = get_setting(FUTURES_DB_PATH, 'tv_demo',      'true').lower() == 'true'
+
+    if not tv_username or not tv_password:
+        log.error('Tradovate credentials not configured. Set them in Settings → Tradovate.')
+        return
+
+    client = TradovateClient(tv_username, tv_password, tv_cid, tv_sec,
+                             demo=tv_demo, device_id=tv_device_id)
     try:
         client.connect()
     except Exception:
@@ -182,7 +192,7 @@ def main():
     scheduler.add_job(_snapshot, CronTrigger(day_of_week='mon-fri', hour='10-15', minute=0, timezone=ET), id='snapshot')
     scheduler.add_job(_reset,    CronTrigger(day_of_week='mon-fri', hour=9, minute=29, timezone=ET), id='reset')
 
-    log.info('Futures bot running [%s]. Ctrl+C to stop.', 'DEMO' if TV_DEMO else 'LIVE')
+    log.info('Futures bot running [%s]. Ctrl+C to stop.', 'DEMO' if tv_demo else 'LIVE')
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
