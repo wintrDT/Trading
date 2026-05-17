@@ -420,7 +420,7 @@
                const isToday = dateStr === todayStr;
                const netCls  = stats ? (stats.net > 0 ? 'profit' : stats.net < 0 ? 'loss' : 'flat') : '';
         %>
-          <div class="cal-cell <%= netCls %> <%= isToday ? 'today' : '' %> <%= stats ? 'clickable' : '' %>" <%= stats ? `data-date="${dateStr}" onclick="showDayDetails('${dateStr}')"` : '' %>>
+          <div class="cal-cell <%= netCls %> <%= isToday ? 'today' : '' %> <%= stats ? 'clickable' : '' %>" <%- stats ? `data-date="${dateStr}" onclick="showDayDetails('${dateStr}')"` : '' %>>
             <div class="cal-day"><%= dayNum %></div>
             <% if (stats) { %>
               <div class="cal-wl"><span class="cal-w"><%= stats.wins %>W</span><span class="cal-l"><%= stats.losses %>L</span></div>
