@@ -124,7 +124,7 @@
     </div>
   </nav>
 
-  <div class="container" style="padding-top:2rem;">
+  <div id="live-content" class="container" style="padding-top:2rem;">
     <div class="page-header"><h2>Futures Trading</h2></div>
 
     <% if (!botOnline) { %>
@@ -436,7 +436,7 @@
 
     <!-- Trade History -->
     <div class="card" style="margin-bottom:1.25rem;">
-      <details>
+      <details id="tradeHistoryDetails">
         <summary>
           <span class="sect-hdr" style="display:inline;">Trade History</span>
           &nbsp;<span style="font-size:0.75rem;color:var(--text2);">(<%= closedTrades ? closedTrades.length : 0 %> closed)</span>
@@ -601,7 +601,8 @@
     }
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDayModal(); });
 
-    // Live update every 15s — swap only the price/position/stats sections, no full page reload.
+    // Live update every 15s — swap the whole content block, preserve scroll
+    // position, open <details> state, and the calendar modal's data cache.
     // Skips while the day-detail modal is open so the user can read it.
     async function refreshLiveSections() {
       if (document.getElementById('dayModalBackdrop').classList.contains('open')) return;
@@ -610,11 +611,32 @@
         if (!r.ok) return;
         const html = await r.text();
         const dom  = new DOMParser().parseFromString(html, 'text/html');
-        for (const id of ['live-stats', 'live-market-status', 'live-open-positions']) {
-          const fresh = dom.getElementById(id);
-          const stale = document.getElementById(id);
-          if (fresh && stale) stale.replaceWith(fresh);
+
+        // Snapshot UI state so it survives the swap
+        const scrollY    = window.scrollY;
+        const openDetails = new Set(
+          Array.from(document.querySelectorAll('details[id]'))
+               .filter(d => d.open)
+               .map(d => d.id)
+        );
+
+        // Swap the entire content area in one shot
+        const fresh = dom.getElementById('live-content');
+        const stale = document.getElementById('live-content');
+        if (fresh && stale) stale.replaceWith(fresh);
+
+        // Refresh calendar's modal data cache too (lives outside live-content)
+        const freshData = dom.getElementById('dailyStatsData');
+        const staleData = document.getElementById('dailyStatsData');
+        if (freshData && staleData) staleData.textContent = freshData.textContent;
+
+        // Restore open details
+        for (const id of openDetails) {
+          const el = document.getElementById(id);
+          if (el) el.open = true;
         }
+        // Restore scroll
+        window.scrollTo(0, scrollY);
       } catch (e) {
         console.warn('live refresh failed:', e);
       }
