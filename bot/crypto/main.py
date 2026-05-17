@@ -32,11 +32,12 @@ _prev_prices:    dict = {}  # {symbol: last bar's close — used for momentum co
 _peak_dev:       dict = {}  # {symbol: {'side','peak'}} — bounce-confirmed reversion state
 
 
-def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.25):
+def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.10):
     """Bounce-confirmed VWAP reversion (same pattern as futures).
 
-    Tracks peak deviation while price extends. Returns a direction only after
-    price has retraced `retrace` of the way back toward VWAP.
+    Tracks peak deviation while price extends. Returns a direction after either:
+      - price has retraced `retrace` fraction back toward VWAP from the peak, OR
+      - first crossing into the threshold band is already past 2x threshold (instant fire — already very stretched)
     """
     state = _peak_dev.get(symbol)
 
@@ -47,26 +48,39 @@ def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0
         state = None
 
     if dev_pct <= -thresh_long:
+        # Instant-fire path: deviation already past 2x threshold = take the trade now, skip confirmation
+        if abs(dev_pct) >= 2 * thresh_long:
+            _peak_dev.pop(symbol, None)
+            log.info('%s reversion long FIRES (extreme dev=%.3f%%, threshold=%.2f%%)', symbol, dev_pct, thresh_long)
+            return 'long'
         if state is None or state['side'] != 'long':
             _peak_dev[symbol] = {'side': 'long', 'peak': dev_pct}
+            log.info('%s reversion long pending — peak=%.3f%% (waiting for %.0f%% retrace)', symbol, dev_pct, retrace * 100)
             return None
         if dev_pct < state['peak']:
             state['peak'] = dev_pct
             return None
         if abs(dev_pct - state['peak']) / abs(state['peak']) >= retrace:
             _peak_dev.pop(symbol, None)
+            log.info('%s reversion long FIRES (peak=%.3f%%, now=%.3f%%)', symbol, state['peak'], dev_pct)
             return 'long'
         return None
 
     if dev_pct >= thresh_short:
+        if dev_pct >= 2 * thresh_short:
+            _peak_dev.pop(symbol, None)
+            log.info('%s reversion short FIRES (extreme dev=%.3f%%, threshold=%.2f%%)', symbol, dev_pct, thresh_short)
+            return 'short'
         if state is None or state['side'] != 'short':
             _peak_dev[symbol] = {'side': 'short', 'peak': dev_pct}
+            log.info('%s reversion short pending — peak=%.3f%% (waiting for %.0f%% retrace)', symbol, dev_pct, retrace * 100)
             return None
         if dev_pct > state['peak']:
             state['peak'] = dev_pct
             return None
         if (state['peak'] - dev_pct) / state['peak'] >= retrace:
             _peak_dev.pop(symbol, None)
+            log.info('%s reversion short FIRES (peak=%.3f%%, now=%.3f%%)', symbol, state['peak'], dev_pct)
             return 'short'
         return None
 
@@ -74,9 +88,11 @@ def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0
     if state:
         if state['side'] == 'long' and abs(dev_pct - state['peak']) / abs(state['peak']) >= retrace:
             _peak_dev.pop(symbol, None)
+            log.info('%s reversion long FIRES post-band (peak=%.3f%%, now=%.3f%%)', symbol, state['peak'], dev_pct)
             return 'long'
         if state['side'] == 'short' and (state['peak'] - dev_pct) / state['peak'] >= retrace:
             _peak_dev.pop(symbol, None)
+            log.info('%s reversion short FIRES post-band (peak=%.3f%%, now=%.3f%%)', symbol, state['peak'], dev_pct)
             return 'short'
 
     return None
