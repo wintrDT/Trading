@@ -468,7 +468,7 @@ def main():
 
     scheduler = BlockingScheduler(timezone=ET)
     scheduler.add_job(_scan,     IntervalTrigger(seconds=30, timezone=ET), id='scan')
-    scheduler.add_job(_manage,   IntervalTrigger(seconds=15, timezone=ET), id='manage')
+    scheduler.add_job(_manage,   IntervalTrigger(seconds=5, timezone=ET), id='manage')
     # Snapshot every hour during active session (6 PM – 5 PM next day, skip 5–6 PM window)
     scheduler.add_job(_snapshot, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='snapshot')
     # Reset VWAP/ORB at 6 PM ET — start of new futures session
