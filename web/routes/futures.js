@@ -57,15 +57,23 @@ router.get('/', requireAuth, (req, res) => {
 
       // Daily wins/losses for calendar — bucket by ET date so overnight trades land on the right day
       const tradeRows = db.prepare(
-        "SELECT close_ts, pnl FROM futures_trades WHERE status='closed' AND close_ts IS NOT NULL AND pnl IS NOT NULL AND close_ts > datetime('now','-3 months')"
+        "SELECT id, symbol, strategy, direction, entry_price, close_price, pnl, close_reason, close_ts FROM futures_trades WHERE status='closed' AND close_ts IS NOT NULL AND pnl IS NOT NULL AND close_ts > datetime('now','-3 months') ORDER BY close_ts DESC"
       ).all();
       for (const r of tradeRows) {
         const etDate = new Date(r.close_ts).toLocaleDateString('en-CA', {timeZone:'America/New_York'});
-        if (!dailyStats[etDate]) dailyStats[etDate] = {wins:0, losses:0, win_total:0, loss_total:0, net:0};
+        if (!dailyStats[etDate]) dailyStats[etDate] = {wins:0, losses:0, win_total:0, loss_total:0, net:0, trades:[]};
         const pnl = parseFloat(r.pnl);
         dailyStats[etDate].net += pnl;
         if (pnl > 0) { dailyStats[etDate].wins++; dailyStats[etDate].win_total += pnl; }
         else if (pnl < 0) { dailyStats[etDate].losses++; dailyStats[etDate].loss_total += pnl; }
+        dailyStats[etDate].trades.push({
+          id: r.id, symbol: r.symbol, strategy: r.strategy, direction: r.direction,
+          entry: parseFloat(r.entry_price),
+          exit:  r.close_price != null ? parseFloat(r.close_price) : null,
+          pnl:   pnl,
+          reason: r.close_reason || null,
+          ts: r.close_ts,
+        });
       }
 
       try {
