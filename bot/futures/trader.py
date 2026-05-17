@@ -1,9 +1,9 @@
 # bot/futures/trader.py
 import logging
 from datetime import datetime, timezone
-from bot.futures.config import TICK_INFO, RISK_RULES
+from bot.futures.config import TICK_INFO, RISK_RULES, SYMBOL_RISK
 from bot.futures.risk import calc_stop_price, calc_target_price, calc_pnl
-from bot.futures.db import insert_trade, update_trade_closed, mark_signal_traded, get_open_trades
+from bot.futures.db import insert_trade, update_trade_closed, mark_signal_traded, get_open_trades, get_last_close_info
 
 log = logging.getLogger(__name__)
 
@@ -18,10 +18,45 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         log.info('Skipping %s %s — already have open trade', symbol, direction)
         return None
 
+    cooldown = RISK_RULES.get('cooldown_minutes', 0)
+    if cooldown:
+        last_close, last_reason = get_last_close_info(db_path, symbol)
+        if last_close:
+            # 3x cooldown after a stop_loss — prevents revenge entries
+            effective_cooldown = cooldown * 3 if last_reason == 'stop_loss' else cooldown
+            last_dt = datetime.fromisoformat(last_close.replace('Z', '+00:00'))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds() / 60
+            if elapsed < effective_cooldown:
+                suffix = ' (post-stop)' if last_reason == 'stop_loss' else ''
+                log.info('Skipping %s — cooldown %.1f min remaining%s',
+                         symbol, effective_cooldown - elapsed, suffix)
+                return None
+
     tick_data    = TICK_INFO.get(symbol, TICK_INFO['ES'])
     tick         = tick_data['tick']
-    stop_price   = calc_stop_price(direction, price, RISK_RULES['stop_ticks'], tick)
-    target_price = calc_target_price(direction, price, RISK_RULES['target_ticks'], tick)
+    risk         = SYMBOL_RISK.get(symbol, RISK_RULES)
+    counter_trend = direction == 'short' and signal.get('trend') == 'up'
+    if direction == 'short':
+        stop_ticks   = risk.get('short_stop_ticks', risk['stop_ticks'])
+        target_ticks = risk.get('counter_trend_target_ticks', 16) if counter_trend else risk.get('short_target_ticks', risk['target_ticks'])
+    else:
+        stop_ticks   = risk['stop_ticks']
+        target_ticks = risk['target_ticks']
+    stop_price   = calc_stop_price(direction, price, stop_ticks, tick)
+
+    # Use VWAP as natural reversion target when available — snap to nearest tick
+    # Falls back to fixed ticks if VWAP is missing or doesn't give at least 1:1 R:R
+    vwap_val = signal.get('vwap')
+    target_price = calc_target_price(direction, price, target_ticks, tick)
+    if vwap_val and vwap_val > 0:
+        snapped = round(round(vwap_val / tick) * tick, 4)
+        stop_dist   = abs(stop_price - price)
+        target_dist = abs(snapped - price)
+        valid = (direction == 'long'  and snapped > price) or (direction == 'short' and snapped < price)
+        if valid and target_dist >= stop_dist:
+            target_price = snapped
 
     order_id = 'SIM'
     if not sim:
@@ -30,16 +65,18 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         order_id = str(resp.get('orderId', 'UNKNOWN'))
 
     trade_id = insert_trade(db_path, {
-        'symbol':       symbol,
-        'strategy':     signal['strategy'],
-        'direction':    direction,
-        'entry_price':  price,
-        'entry_ts':     datetime.now(timezone.utc).isoformat(),
-        'stop_price':   stop_price,
-        'target_price': target_price,
-        'contracts':    contracts,
-        'order_id':     order_id,
-        'status':       'open',
+        'symbol':        symbol,
+        'strategy':      signal['strategy'],
+        'direction':     direction,
+        'entry_price':   price,
+        'entry_ts':      datetime.now(timezone.utc).isoformat(),
+        'stop_price':    stop_price,
+        'target_price':  target_price,
+        'contracts':     contracts,
+        'order_id':      order_id,
+        'status':        'open',
+        'entry_rsi':     signal.get('entry_rsi'),
+        'entry_dev_pct': signal.get('entry_dev_pct'),
     })
     if signal_id:
         try:

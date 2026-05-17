@@ -1,7 +1,9 @@
 # bot/futures/manager.py
 import logging
-from bot.futures.db import get_open_trades, update_trade_price
-from bot.futures.risk import should_exit
+from datetime import datetime, timezone
+from bot.futures.config import RISK_RULES, TICK_INFO
+from bot.futures.db import get_open_trades, update_trade_price, update_trade_extremes
+from bot.futures.risk import should_exit, calc_breakeven_stop, calc_trailing_stop
 from bot.futures.trader import close_trade
 
 log = logging.getLogger(__name__)
@@ -30,12 +32,57 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
 
         update_trade_price(db_path, trade['id'], current_price)
 
-        reason = should_exit(
-            trade['direction'],
-            current_price,
-            float(trade['stop_price']),
-            float(trade['target_price']),
-        )
+        stop      = float(trade['stop_price'])
+        entry     = float(trade['entry_price'])
+        target    = float(trade['target_price'])
+        direction = trade['direction']
+        tick      = TICK_INFO.get(symbol, TICK_INFO['ES'])['tick']
+        pv        = TICK_INFO.get(symbol, TICK_INFO['ES'])['point_value']
+
+        # MAE/MFE: track worst and best unrealized P&L the trade ever reached
+        unrealized = (current_price - entry if direction == 'long' else entry - current_price) * trade['contracts'] * pv
+        prev_fav = trade.get('max_favorable')
+        prev_adv = trade.get('max_adverse')
+        new_fav = unrealized if prev_fav is None else max(prev_fav, unrealized)
+        new_adv = unrealized if prev_adv is None else min(prev_adv, unrealized)
+        if new_fav != prev_fav or new_adv != prev_adv:
+            update_trade_extremes(db_path, trade['id'], new_fav, new_adv)
+
+        # Best stop = highest of original, breakeven, and trailing (for longs; lowest for shorts)
+        be_stop   = calc_breakeven_stop(direction, entry, current_price, target)
+        trail_stop = calc_trailing_stop(direction, entry, current_price, tick)
+
+        new_stop = stop
+        for candidate in [be_stop, trail_stop]:
+            if candidate is None:
+                continue
+            if direction == 'long'  and candidate > new_stop:
+                new_stop = candidate
+            elif direction == 'short' and candidate < new_stop:
+                new_stop = candidate
+
+        if new_stop != stop:
+            stop = new_stop
+            trade = {**trade, 'stop_price': stop}
+            update_trade_price(db_path, trade['id'], current_price)
+            log.info('Stop trailed to %.2f for %s trade id=%s', stop, symbol, trade['id'])
+
+        reason = should_exit(trade['direction'], current_price, stop, target)
+
+        if reason is None:
+            try:
+                entry_dt = datetime.fromisoformat(trade['entry_ts'].replace('Z', '+00:00'))
+                age_min  = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
+                if age_min >= RISK_RULES['trade_timeout_minutes']:
+                    reason = 'timeout'
+            except Exception:
+                pass
 
         if reason:
-            close_trade(client, db_path, trade, current_price, reason, sim=sim)
+            if reason == 'stop_loss':
+                exit_price = stop
+            elif reason == 'profit_target':
+                exit_price = target
+            else:
+                exit_price = current_price
+            close_trade(client, db_path, trade, exit_price, reason, sim=sim)

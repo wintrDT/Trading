@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS futures_trades (
     contracts INTEGER DEFAULT 1,
     order_id TEXT,
     status TEXT DEFAULT 'open',
-    pnl REAL
+    pnl REAL,
+    entry_rsi REAL,
+    entry_dev_pct REAL,
+    max_favorable REAL,
+    max_adverse REAL
 )
 """
 
@@ -92,6 +96,15 @@ def init_db(db_path):
         conn.execute(_CREATE_SNAPSHOTS)
         conn.execute(_CREATE_SETTINGS)
         conn.execute(_CREATE_NEWS)
+        trade_cols = {r[1] for r in conn.execute("PRAGMA table_info(futures_trades)").fetchall()}
+        if 'entry_rsi' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN entry_rsi REAL")
+        if 'entry_dev_pct' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN entry_dev_pct REAL")
+        if 'max_favorable' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN max_favorable REAL")
+        if 'max_adverse' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN max_adverse REAL")
 
 
 def get_setting(db_path, key, default=None):
@@ -120,12 +133,12 @@ def insert_signal(db_path, signal):
 def insert_trade(db_path, trade):
     sql = """
     INSERT INTO futures_trades (symbol, strategy, direction, entry_price, entry_ts,
-        stop_price, target_price, contracts, order_id, status)
+        stop_price, target_price, contracts, order_id, status, entry_rsi, entry_dev_pct)
     VALUES (:symbol, :strategy, :direction, :entry_price, :entry_ts,
-        :stop_price, :target_price, :contracts, :order_id, :status)
+        :stop_price, :target_price, :contracts, :order_id, :status, :entry_rsi, :entry_dev_pct)
     """
     with _conn(db_path) as conn:
-        return conn.execute(sql, trade).lastrowid
+        return conn.execute(sql, {'entry_rsi': None, 'entry_dev_pct': None, **trade}).lastrowid
 
 
 def update_trade_price(db_path, trade_id, current_price):
@@ -133,6 +146,14 @@ def update_trade_price(db_path, trade_id, current_price):
         cur = conn.execute("UPDATE futures_trades SET current_price=? WHERE id=?", (current_price, trade_id))
         if cur.rowcount == 0:
             raise ValueError(f"No futures trade with id={trade_id}")
+
+
+def update_trade_extremes(db_path, trade_id, max_fav, max_adv):
+    with _conn(db_path) as conn:
+        conn.execute(
+            "UPDATE futures_trades SET max_favorable=?, max_adverse=? WHERE id=?",
+            (max_fav, max_adv, trade_id),
+        )
 
 
 def update_trade_closed(db_path, trade_id, close_price, close_reason, close_ts, pnl):
@@ -223,6 +244,72 @@ def get_recent_news(db_path, limit=20):
             "SELECT * FROM futures_news ORDER BY event_ts DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+_SENTIMENT_SCORES = {
+    'Bullish': 1.0, 'Somewhat-Bullish': 0.5, 'Neutral': 0.0,
+    'Somewhat-Bearish': -0.5, 'Bearish': -1.0,
+}
+
+def get_market_bias(db_path: str, symbol: str = None) -> str | None:
+    """Returns 'long', 'short', or None based on recent news sentiment.
+    When symbol is provided, re-scores headlines using symbol-specific keywords."""
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT sentiment, title FROM futures_news WHERE news_type='headline' AND sentiment IS NOT NULL "
+            "ORDER BY fetched_ts DESC LIMIT 10"
+        ).fetchall()
+    if not rows:
+        return None
+
+    if symbol:
+        from bot.futures.config import SYMBOL_NEWS_KEYWORDS
+        kw = SYMBOL_NEWS_KEYWORDS.get(symbol)
+        if kw:
+            scores = []
+            for r in rows:
+                title = (r['title'] or '').lower()
+                bull = sum(1 for w in kw['bull'] if w in title)
+                bear = sum(1 for w in kw['bear'] if w in title)
+                if bull > bear:
+                    scores.append(1.0)
+                elif bear > bull:
+                    scores.append(-1.0)
+                else:
+                    scores.append(_SENTIMENT_SCORES.get(r['sentiment'], 0.0))
+            avg = sum(scores) / len(scores)
+            if avg >= 0.2:  return 'long'
+            if avg <= -0.2: return 'short'
+            return None
+
+    scores = [_SENTIMENT_SCORES.get(r['sentiment'], 0.0) for r in rows]
+    avg = sum(scores) / len(scores)
+    if avg >= 0.2:
+        return 'long'
+    if avg <= -0.2:
+        return 'short'
+    return None
+
+
+def get_last_close_ts(db_path, symbol: str):
+    """Returns ISO close timestamp of the most recent closed trade for symbol, or None."""
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT close_ts FROM futures_trades WHERE symbol=? AND status='closed' ORDER BY close_ts DESC LIMIT 1",
+            (symbol,)
+        ).fetchone()
+        return row['close_ts'] if row else None
+
+
+def get_last_close_info(db_path, symbol: str):
+    """Returns (close_ts, close_reason) of the most recent closed trade for symbol, or (None, None)."""
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT close_ts, close_reason FROM futures_trades WHERE symbol=? AND status='closed' "
+            "ORDER BY close_ts DESC LIMIT 1",
+            (symbol,)
+        ).fetchone()
+        return (row['close_ts'], row['close_reason']) if row else (None, None)
 
 
 def get_today_event_times(db_path, date_str: str) -> list:
