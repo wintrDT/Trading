@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="10">
+  <title>Crypto Trading — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+  <style>
+    .fut-stat-bar { display:flex; gap:1.25rem; flex-wrap:wrap; margin-bottom:1.5rem; }
+    .fut-stat { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:1rem 1.4rem; min-width:130px; }
+    .fut-stat-label { font-size:0.70rem; color:var(--text2); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px; }
+    .fut-stat-value { font-family:'Space Mono',monospace; font-size:1.2rem; font-weight:700; }
+    .fut-stat-value.pos { color:#00d4a0; }
+    .fut-stat-value.neg { color:#ff4f4f; }
+    .opt-table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+    .opt-table th { text-align:left; padding:8px 12px; color:var(--text2); font-weight:600; font-size:0.70rem; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid var(--border); }
+    .opt-table td { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.04); }
+    tr.row-profit td { color:#00d4a0; }
+    tr.row-loss   td { color:#ff4f4f; }
+    .badge { display:inline-block; font-size:0.63rem; padding:2px 7px; border-radius:4px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; }
+    .b-long  { background:rgba(0,212,160,0.12);  color:#00d4a0; }
+    .b-short { background:rgba(255,79,79,0.12);   color:#ff4f4f; }
+    .b-vwap  { background:rgba(100,180,255,0.12); color:#64b4ff; }
+    .b-channel { background:rgba(255,180,80,0.12); color:#ffb450; }
+    .b-open  { background:rgba(0,212,160,0.12);   color:#00d4a0; }
+    .sect-hdr { font-size:0.82rem; font-weight:700; color:var(--accent); margin:0 0 0.75rem; text-transform:uppercase; letter-spacing:0.07em; }
+    .offline-bar { background:rgba(255,79,79,0.08); border:1px solid rgba(255,79,79,0.25); border-radius:8px; padding:0.7rem 1rem; font-size:0.82rem; color:#ff4f4f; margin-bottom:1.25rem; }
+    .price-ticker { display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1.25rem; }
+    .price-ticker-card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:0.65rem 1rem; display:flex; align-items:baseline; gap:0.5rem; }
+    .price-ticker-sym { font-size:0.68rem; color:var(--text2); text-transform:uppercase; letter-spacing:0.06em; font-weight:700; }
+    .price-ticker-val { font-family:'Space Mono',monospace; font-size:0.95rem; font-weight:700; color:var(--text); }
+    details summary { cursor:pointer; color:var(--text2); font-size:0.82rem; padding:4px 0; user-select:none; }
+    details summary:hover { color:var(--text); }
+    details[open] summary { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <%
+  function money(n) {
+    if (n == null) return '—';
+    const v = parseFloat(n);
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+  function fmtPrice(n) {
+    if (n == null) return '—';
+    const v = parseFloat(n);
+    if (v >= 1000) return v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    if (v >= 1)    return v.toFixed(3);
+    return v.toFixed(5);
+  }
+  function pclass(n) { return n == null ? '' : parseFloat(n) >= 0 ? 'pos' : 'neg'; }
+  function dirBadge(d) {
+    if (d === 'long')  return '<span class="badge b-long">Long</span>';
+    if (d === 'short') return '<span class="badge b-short">Short</span>';
+    return '<span class="badge">' + (d||'?') + '</span>';
+  }
+  function stratBadge(s) {
+    if (s === 'vwap')    return '<span class="badge b-vwap">VWAP</span>';
+    if (s === 'channel') return '<span class="badge b-channel">Channel</span>';
+    return '<span class="badge">' + (s||'?') + '</span>';
+  }
+  function calcUnrealized(t) {
+    if (t.current_price == null) return 0;
+    const sign = t.direction === 'long' ? 1 : -1;
+    return sign * (t.current_price - t.entry_price) * t.size;
+  }
+  %>
+
+  <div id="vanta-bg"></div>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger">Predictions <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/spreads">Spreads</a>
+          <a href="/portfolio">Portfolio</a>
+        </div>
+      </div>
+      <div class="nav-dropdown">
+        <button class="nav-dropdown-trigger active">Trading <span class="dd-arrow">▼</span></button>
+        <div class="nav-dropdown-menu">
+          <a href="/options">Options</a>
+          <a href="/futures">Futures</a>
+          <a href="/crypto" class="active">Crypto</a>
+        </div>
+      </div>
+      <a href="/settings">Settings</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+    </div>
+    <div class="nav-right">
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <div class="container" style="padding-top:2rem;">
+    <div class="page-header"><h2>Crypto Trading</h2></div>
+
+    <% if (!botOnline) { %>
+    <div class="offline-bar">Bot offline — run <code>python -m bot.crypto.main</code> to start.</div>
+    <% } %>
+
+    <% const SYMS = ['BTCUSDT','ETHUSDT','SOLUSDT','DOGEUSDT']; %>
+    <% if (Object.keys(livePrices).length > 0) { %>
+    <div class="price-ticker">
+      <% SYMS.forEach(sym => { const p = livePrices[sym]; if (!p) return; %>
+      <div class="price-ticker-card">
+        <span class="price-ticker-sym"><%= DISPLAY[sym] || sym %></span>
+        <span class="price-ticker-val"><%= fmtPrice(p) %></span>
+      </div>
+      <% }) %>
+    </div>
+    <% } %>
+
+    <div class="fut-stat-bar">
+      <div class="fut-stat">
+        <div class="fut-stat-label">Equity</div>
+        <div class="fut-stat-value <%= snap ? pclass(snap.equity - 10000) : '' %>"><%= snap ? money(snap.equity) : '—' %></div>
+      </div>
+      <div class="fut-stat">
+        <div class="fut-stat-label">Today P&amp;L</div>
+        <div class="fut-stat-value <%= pclass(todayPnl) %>"><%= todayPnl != null ? (todayPnl >= 0 ? '+' : '') + money(todayPnl) : '—' %></div>
+      </div>
+      <div class="fut-stat">
+        <div class="fut-stat-label">All-time P&amp;L</div>
+        <div class="fut-stat-value <%= pclass(allTimePnl) %>"><%= allTimePnl != null ? (allTimePnl >= 0 ? '+' : '') + money(allTimePnl) : '—' %></div>
+      </div>
+      <div class="fut-stat">
+        <div class="fut-stat-label">Open Positions</div>
+        <div class="fut-stat-value"><%= openTrades.length %></div>
+      </div>
+      <div class="fut-stat">
+        <div class="fut-stat-label">Win Rate</div>
+        <div class="fut-stat-value <%= winRate != null ? (winRate >= 50 ? 'pos' : 'neg') : '' %>">
+          <%= winRate != null ? winRate + '%' : '—' %>
+          <% if (winRateTotal > 0) { %><span style="font-size:0.65rem;color:var(--text2);font-weight:400;margin-left:4px;">(<%= winRateTotal %> trades)</span><% } %>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:1.25rem;margin-bottom:1.5rem;">
+      <h3 class="sect-hdr">Open Positions</h3>
+      <% if (openTrades.length === 0) { %>
+        <p style="color:var(--text2);font-size:0.82rem;padding:0.5rem 0;">No open positions.</p>
+      <% } else { %>
+        <table class="opt-table">
+          <thead><tr><th>Symbol</th><th>Strategy</th><th>Direction</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>Unrealized</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+          <% openTrades.forEach(t => { const u = calcUnrealized(t); %>
+            <tr class="<%= u >= 0 ? 'row-profit' : 'row-loss' %>">
+              <td><strong><%= DISPLAY[t.symbol] || t.symbol %></strong></td>
+              <td><%- stratBadge(t.strategy) %></td>
+              <td><%- dirBadge(t.direction) %></td>
+              <td><%= fmtPrice(t.entry_price) %></td>
+              <td><%= fmtPrice(t.current_price) %></td>
+              <td><%= fmtPrice(t.stop_price) %></td>
+              <td><%= fmtPrice(t.target_price) %></td>
+              <td><%= u >= 0 ? '+' : '' %><%= money(u) %></td>
+              <td><span class="badge b-open">Open</span></td>
+              <td><button onclick="closeCryptoTrade(<%= t.id %>, this)" style="background:rgba(255,79,79,0.15);color:#ff4f4f;border:1px solid rgba(255,79,79,0.4);border-radius:5px;padding:4px 10px;font-size:0.72rem;font-weight:700;cursor:pointer;">Close Now</button></td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+        <script>
+        async function closeCryptoTrade(id, btn) {
+          if (!confirm('Close this trade at current market price?')) return;
+          btn.disabled = true;
+          btn.textContent = 'Closing...';
+          try {
+            const r = await fetch('/crypto/close/' + id, { method:'POST', headers:{'Content-Type':'application/json'} });
+            const data = await r.json();
+            if (!r.ok || !data.ok) throw new Error(data.error || 'Request failed');
+            location.reload();
+          } catch (e) {
+            alert('Close failed: ' + e.message);
+            btn.disabled = false;
+            btn.textContent = 'Close Now';
+          }
+        }
+        </script>
+      <% } %>
+    </div>
+
+    <div class="card" style="padding:1.25rem;margin-bottom:1.5rem;">
+      <h3 class="sect-hdr">Signal Feed</h3>
+      <% if (recentSignals.length === 0) { %>
+        <p style="color:var(--text2);font-size:0.82rem;padding:0.5rem 0;">No signals yet. Bot scans every 15 seconds.</p>
+      <% } else { %>
+        <table class="opt-table">
+          <thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Direction</th><th>Price</th><th>Status</th></tr></thead>
+          <tbody>
+          <% recentSignals.forEach(s => { %>
+            <tr>
+              <td><%= new Date(s.ts).toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) %></td>
+              <td><strong><%= DISPLAY[s.symbol] || s.symbol %></strong></td>
+              <td><%- stratBadge(s.strategy) %></td>
+              <td><%- dirBadge(s.direction) %></td>
+              <td><%= fmtPrice(s.price) %></td>
+              <td><span class="badge <%= s.traded ? 'b-open' : '' %>"><%= s.traded ? 'Traded' : 'Pending' %></span></td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+      <% } %>
+    </div>
+
+    <div class="card" style="padding:1.25rem;">
+      <details <%= closedTrades.length > 0 ? 'open' : '' %>>
+        <summary>▶ <strong>Trade History</strong> &nbsp;(<%= closedTrades.length %> closed)</summary>
+        <% if (closedTrades.length > 0) { %>
+        <table class="opt-table" style="margin-top:0.75rem;">
+          <thead><tr><th>Symbol</th><th>Strategy</th><th>Direction</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Reason</th><th>Date</th></tr></thead>
+          <tbody>
+          <% closedTrades.forEach(t => { %>
+            <tr class="<%= t.pnl >= 0 ? 'row-profit' : 'row-loss' %>">
+              <td><strong><%= DISPLAY[t.symbol] || t.symbol %></strong></td>
+              <td><%- stratBadge(t.strategy) %></td>
+              <td><%- dirBadge(t.direction) %></td>
+              <td><%= fmtPrice(t.entry_price) %></td>
+              <td><%= fmtPrice(t.close_price) %></td>
+              <td><strong><%= t.pnl >= 0 ? '+' : '' %><%= money(t.pnl) %></strong></td>
+              <td><%= t.close_reason %></td>
+              <td><%= new Date(t.close_ts).toLocaleString('en-US', {timeZone:'America/New_York', month:'numeric', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true}) %> ET</td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+        <% } %>
+      </details>
+    </div>
+  </div>
+  <script src="/nav.js?v=4"></script>
+</body>
+</html>
