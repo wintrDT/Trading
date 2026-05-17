@@ -36,6 +36,27 @@
     .pnl-bar-fill { height:5px; border-radius:3px; }
     .pnl-bar-fill.profit { background:#00d4a0; }
     .pnl-bar-fill.loss   { background:#ff4f4f; }
+    .cal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; }
+    .cal-month  { font-size:1rem; font-weight:700; color:var(--text); }
+    .cal-legend { display:flex; gap:0.75rem; font-size:0.68rem; color:var(--text2); }
+    .cal-legend-dot { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+    .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+    .cal-dow { text-align:center; font-size:0.65rem; color:var(--text2); padding:6px 0 2px; text-transform:uppercase; letter-spacing:0.06em; font-weight:600; }
+    .cal-cell { background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:6px; min-height:72px; padding:6px 7px; position:relative; }
+    .cal-cell.empty { background:transparent; border:none; }
+    .cal-cell.today { box-shadow:0 0 0 1px var(--accent) inset; }
+    .cal-cell.profit { background:rgba(0,212,160,0.10); border-color:rgba(0,212,160,0.30); }
+    .cal-cell.loss   { background:rgba(255,79,79,0.10); border-color:rgba(255,79,79,0.30); }
+    .cal-cell.flat   { background:rgba(180,180,180,0.05); }
+    .cal-day { font-size:0.72rem; font-weight:700; color:var(--text2); line-height:1; }
+    .cal-cell.today .cal-day { color:var(--accent); }
+    .cal-wl { font-size:0.66rem; font-family:'Space Mono',monospace; margin-top:4px; line-height:1.1; }
+    .cal-w { color:#00d4a0; font-weight:700; }
+    .cal-l { color:#ff4f4f; font-weight:700; margin-left:6px; }
+    .cal-net { font-family:'Space Mono',monospace; font-size:0.74rem; font-weight:700; margin-top:3px; line-height:1; }
+    .cal-net.profit { color:#00d4a0; }
+    .cal-net.loss   { color:#ff4f4f; }
+    .cal-net.flat   { color:var(--text2); }
   </style>
 </head>
 <body>
@@ -76,6 +97,7 @@
         <div class="nav-dropdown-menu">
           <a href="/options">Options</a>
           <a href="/futures" class="active">Futures</a>
+          <a href="/crypto">Crypto</a>
         </div>
       </div>
       <a href="/settings">Settings</a>
@@ -94,12 +116,23 @@
     <div class="offline-bar">Bot offline — run <code>python -m bot.futures.main</code> to start. Configure credentials in <a href="/settings" style="color:#ff4f4f">Settings</a>.</div>
     <% } %>
 
+    <!-- Trading Controls -->
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem;">
+      <% if (tradingPaused) { %>
+        <button id="tradeToggleBtn" onclick="toggleTrading()" style="background:rgba(0,212,160,0.15);border:1px solid rgba(0,212,160,0.5);color:#00d4a0;font-size:0.82rem;padding:8px 20px;border-radius:7px;cursor:pointer;font-weight:700;letter-spacing:0.04em;">▶ Start Trading</button>
+        <span style="font-size:0.78rem;color:#f5a623;font-weight:600;">⏸ Trading Paused</span>
+      <% } else { %>
+        <button id="tradeToggleBtn" onclick="toggleTrading()" style="background:rgba(255,79,79,0.15);border:1px solid rgba(255,79,79,0.5);color:#ff4f4f;font-size:0.82rem;padding:8px 20px;border-radius:7px;cursor:pointer;font-weight:700;letter-spacing:0.04em;">⏹ Stop Trading</button>
+        <span style="font-size:0.78rem;color:#00d4a0;font-weight:600;">● Trading Active</span>
+      <% } %>
+    </div>
+
     <!-- Account Stats -->
     <div class="fut-stat-bar">
       <div class="fut-stat">
-        <div class="fut-stat-label">Net Liq</div>
-        <div class="fut-stat-value <%= accountSnap ? pclass(accountSnap.net_liq) : '' %>">
-          <%= accountSnap ? money(accountSnap.net_liq) : '—' %>
+        <div class="fut-stat-label">NET LIQ</div>
+        <div class="fut-stat-value <%= netLiq != null ? pclass(netLiq) : '' %>">
+          <%= netLiq != null ? money(netLiq) : '—' %>
         </div>
       </div>
       <div class="fut-stat">
@@ -120,6 +153,71 @@
       </div>
     </div>
 
+    <!-- Market Status -->
+    <% if (marketStatus) {
+      const symbols = ['ES','NQ'];
+      const sessionLabel = marketStatus._session === 'orb' ? '🟡 ORB Window (9:30–10:00 AM)' : '🟢 Active';
+      const ts = marketStatus._ts ? new Date(marketStatus._ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+    %>
+    <div class="card" style="margin-bottom:1.25rem;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.9rem;">
+        <p class="sect-hdr" style="margin:0;">Market Status</p>
+        <span style="font-size:0.72rem;color:var(--text2);">updated <%= ts %> · auto-refresh 15s</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.9rem;">
+        <% for (const sym of symbols) {
+          const s = marketStatus[sym];
+          if (!s) continue;
+          const dev = s.dev_pct;
+          const thr = s.threshold;
+          const pctLeft = dev != null && thr ? Math.max(0, thr - Math.abs(dev)) : null;
+          const progress = dev != null && thr ? Math.min(100, Math.abs(dev) / thr * 100) : 0;
+          const barColor = progress >= 100 ? '#00d4a0' : progress >= 70 ? '#f5a623' : '#64b4ff';
+          const trendColor = s.trend === 'up' ? '#00d4a0' : s.trend === 'down' ? '#ff4f4f' : 'var(--text2)';
+          const trendArrow = s.trend === 'up' ? '▲' : s.trend === 'down' ? '▼' : '—';
+          const sessionTag = s.session === 'orb' ? '<span style="font-size:0.68rem;color:#f5a623;">ORB Building</span>' : '';
+        %>
+        <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;padding:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+            <span style="font-weight:700;font-size:1rem;"><%= sym %></span>
+            <span style="font-family:'Space Mono',monospace;font-size:0.9rem;"><%= s.price != null ? s.price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—' %></span>
+          </div>
+          <% if (s.session === 'orb') { %>
+            <div style="font-size:0.76rem;color:#f5a623;margin-bottom:0.4rem;">📊 Building opening range…</div>
+            <% if (s.orb_high) { %><div style="font-size:0.74rem;color:var(--text2);">High: <span style="color:#00d4a0;font-family:'Space Mono',monospace;"><%= s.orb_high.toFixed(2) %></span> &nbsp; Low: <span style="color:#ff4f4f;font-family:'Space Mono',monospace;"><%= s.orb_low ? s.orb_low.toFixed(2) : '—' %></span></div><% } %>
+          <% } else { %>
+            <!-- Deviation bar -->
+            <div style="font-size:0.72rem;color:var(--text2);margin-bottom:3px;">
+              VWAP deviation: <span style="color:<%= barColor %>;font-weight:600;"><%= dev != null ? (dev >= 0 ? '+' : '') + dev.toFixed(3) + '%' : '—' %></span>
+              <span style="color:var(--text2);"> / need <%= thr ? thr.toFixed(2) + '%' : '—' %></span>
+            </div>
+            <div style="height:5px;background:rgba(255,255,255,0.08);border-radius:3px;margin-bottom:0.55rem;">
+              <div style="height:5px;width:<%= progress.toFixed(0) %>%;background:<%= barColor %>;border-radius:3px;transition:width 0.4s;"></div>
+            </div>
+            <!-- RSI + Trend -->
+            <div style="display:flex;gap:1rem;font-size:0.74rem;">
+              <span style="color:var(--text2);">RSI <span style="color:<%= s.rsi != null && s.rsi > 70 ? '#f5a623' : s.rsi != null && s.rsi < 30 ? '#f5a623' : 'var(--text)' %>;font-weight:600;"><%= s.rsi != null ? s.rsi.toFixed(0) : '—' %></span></span>
+              <span style="color:var(--text2);">Trend <span style="color:<%= trendColor %>;font-weight:600;"><%= trendArrow %> <%= s.trend || '—' %></span></span>
+            </div>
+            <!-- Signal state -->
+            <div style="margin-top:0.5rem;font-size:0.74rem;">
+              <% if (s.signal) { %>
+                <span style="color:#00d4a0;font-weight:700;">⚡ SIGNAL: <%= s.signal.toUpperCase() %></span>
+              <% } else if (s.blocked_by) { %>
+                <span style="color:#f5a623;">⛔ blocked by <%= s.blocked_by %></span>
+              <% } else if (pctLeft != null) { %>
+                <span style="color:var(--text2);">needs +<%= pctLeft.toFixed(3) %>% more to fire</span>
+              <% } else { %>
+                <span style="color:var(--text2);">—</span>
+              <% } %>
+            </div>
+          <% } %>
+        </div>
+        <% } %>
+      </div>
+    </div>
+    <% } %>
+
     <!-- Open Positions -->
     <div class="card" style="margin-bottom:1.25rem;">
       <p class="sect-hdr">Open Positions</p>
@@ -130,7 +228,7 @@
             <tr>
               <th>Symbol</th><th>Strategy</th><th>Direction</th>
               <th>Entry</th><th>Current</th><th>Stop</th><th>Target</th>
-              <th>Unrealized P&amp;L</th><th>Status</th>
+              <th>Unrealized P&amp;L</th><th>Status</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -162,6 +260,9 @@
                 <% } else { %>—<% } %>
               </td>
               <td><span class="badge b-open">Open</span></td>
+              <td>
+                <button onclick="closeTrade(<%= t.id %>)" style="background:rgba(255,79,79,0.15);border:1px solid rgba(255,79,79,0.4);color:#ff4f4f;font-size:0.72rem;padding:4px 10px;border-radius:5px;cursor:pointer;font-weight:700;">Close Now</button>
+              </td>
             </tr>
             <% } %>
           </tbody>
@@ -195,8 +296,8 @@
               <td><%- dirBadge(s.direction) %></td>
               <td style="font-family:'Space Mono',monospace;"><%= s.price != null ? parseFloat(s.price).toFixed(2) : '—' %></td>
               <td style="font-family:'Space Mono',monospace;color:var(--text2);"><%= s.vwap != null ? parseFloat(s.vwap).toFixed(2) : '—' %></td>
-              <td style="font-family:'Space Mono',monospace;color:var(--text2);"><%= s.orb_high != null ? parseFloat(s.orb_high).toFixed(2) : '—' %></td>
-              <td style="font-family:'Space Mono',monospace;color:var(--text2);"><%= s.orb_low  != null ? parseFloat(s.orb_low).toFixed(2)  : '—' %></td>
+              <td style="font-family:'Space Mono',monospace;color:var(--text2);"><%= (s.orb_high != null && isFinite(s.orb_high)) ? parseFloat(s.orb_high).toFixed(2) : '—' %></td>
+              <td style="font-family:'Space Mono',monospace;color:var(--text2);"><%= (s.orb_low  != null && isFinite(s.orb_low))  ? parseFloat(s.orb_low).toFixed(2)  : '—' %></td>
               <td><% if (s.traded == 1) { %><span class="badge b-open">Traded</span><% } %></td>
             </tr>
             <% } %>
@@ -204,7 +305,7 @@
         </table>
       </div>
       <% } else { %>
-      <p style="color:var(--text2);font-size:0.82rem;padding:0.5rem 0;">No signals yet. Bot scans every 45 seconds during market hours (9:30 AM–4:00 PM ET).</p>
+      <p style="color:var(--text2);font-size:0.82rem;padding:0.5rem 0;">No signals yet. Bot scans every 45 seconds (closed 5–6 PM ET only).</p>
       <% } %>
     </div>
 
@@ -254,6 +355,68 @@
       <% } %>
     </div>
 
+    <!-- Daily Wins/Losses Calendar -->
+    <%
+    // Build current-month grid in ET. Cells show wins/losses count + net $.
+    const etToday   = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
+    const calYear   = etToday.getFullYear();
+    const calMonth  = etToday.getMonth();
+    const monthLbl  = etToday.toLocaleString('en-US', {month:'long', year:'numeric'});
+    const todayStr  = etToday.toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+    const firstDay  = new Date(calYear, calMonth, 1);
+    const lastDay   = new Date(calYear, calMonth + 1, 0);
+    const daysInMo  = lastDay.getDate();
+    const startDow  = firstDay.getDay();
+    const totalCells = Math.ceil((startDow + daysInMo) / 7) * 7;
+
+    let monthWins = 0, monthLosses = 0, monthNet = 0;
+    for (const k in dailyStats) {
+      if (k.startsWith(calYear + '-' + String(calMonth + 1).padStart(2, '0'))) {
+        monthWins   += dailyStats[k].wins;
+        monthLosses += dailyStats[k].losses;
+        monthNet    += dailyStats[k].net;
+      }
+    }
+    %>
+    <div class="card" style="margin-bottom:1.25rem;">
+      <div class="cal-header">
+        <div>
+          <span class="sect-hdr" style="display:inline;">Daily Results</span>
+          &nbsp;<span class="cal-month"><%= monthLbl %></span>
+        </div>
+        <div class="cal-legend">
+          <span><span class="cal-w"><%= monthWins %>W</span> <span class="cal-l"><%= monthLosses %>L</span></span>
+          <span class="<%= monthNet > 0 ? 'cal-net profit' : monthNet < 0 ? 'cal-net loss' : 'cal-net flat' %>" style="margin:0;">
+            <%= monthNet >= 0 ? '+' : '' %><%= money(monthNet) %> this month
+          </span>
+        </div>
+      </div>
+      <div class="cal-grid">
+        <div class="cal-dow">Sun</div><div class="cal-dow">Mon</div><div class="cal-dow">Tue</div>
+        <div class="cal-dow">Wed</div><div class="cal-dow">Thu</div><div class="cal-dow">Fri</div>
+        <div class="cal-dow">Sat</div>
+        <% for (let i = 0; i < totalCells; i++) {
+             const dayNum = i - startDow + 1;
+             if (dayNum < 1 || dayNum > daysInMo) { %>
+          <div class="cal-cell empty"></div>
+        <%   } else {
+               const dateStr = calYear + '-' + String(calMonth + 1).padStart(2, '0') + '-' + String(dayNum).padStart(2, '0');
+               const stats   = dailyStats[dateStr];
+               const isToday = dateStr === todayStr;
+               const netCls  = stats ? (stats.net > 0 ? 'profit' : stats.net < 0 ? 'loss' : 'flat') : '';
+        %>
+          <div class="cal-cell <%= netCls %> <%= isToday ? 'today' : '' %>">
+            <div class="cal-day"><%= dayNum %></div>
+            <% if (stats) { %>
+              <div class="cal-wl"><span class="cal-w"><%= stats.wins %>W</span><span class="cal-l"><%= stats.losses %>L</span></div>
+              <div class="cal-net <%= netCls %>"><%= stats.net >= 0 ? '+' : '' %><%= money(stats.net) %></div>
+            <% } %>
+          </div>
+        <%   }
+           } %>
+      </div>
+    </div>
+
     <!-- Trade History -->
     <div class="card" style="margin-bottom:1.25rem;">
       <details>
@@ -284,7 +447,7 @@
                   </td>
                   <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_reason || '—' %></td>
                   <td style="color:var(--text2);font-size:0.78rem;">
-                    <%= t.close_ts ? new Date(t.close_ts).toLocaleDateString() : '—' %>
+                    <%= t.close_ts ? new Date(t.close_ts).toLocaleString('en-US', {timeZone:'America/New_York', month:'numeric', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true}) + ' ET' : '—' %>
                   </td>
                 </tr>
                 <% } %>
@@ -311,5 +474,33 @@
     }
   </script>
   <script src="/nav.js?v=4"></script>
+  <script>
+    function toggleTrading() {
+      fetch('/futures/toggle-trading', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => { if (d.ok) location.reload(); else alert('Error: ' + d.error); })
+        .catch(e => alert('Request failed: ' + e.message));
+    }
+    function closeTrade(id) {
+      if (!confirm('Close this trade at current market price?')) return;
+      fetch('/futures/close/' + id, { method: 'POST' })
+        .then(r => r.text().then(t => ({ status: r.status, text: t })))
+        .then(({ status, text }) => {
+          try {
+            const d = JSON.parse(text);
+            if (d.ok) {
+              const pnl = d.pnl >= 0 ? '+$' + d.pnl.toFixed(2) : '-$' + Math.abs(d.pnl).toFixed(2);
+              alert('Closed at ' + d.price.toFixed(2) + '  P&L: ' + pnl);
+              location.reload();
+            } else {
+              alert('Error: ' + (d.error || 'unknown'));
+            }
+          } catch (_) {
+            alert('Server error ' + status + ':\n' + text.slice(0, 200));
+          }
+        })
+        .catch(e => alert('Request failed: ' + e.message));
+    }
+  </script>
 </body>
 </html>
