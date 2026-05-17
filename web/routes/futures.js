@@ -126,6 +126,46 @@ router.get('/', requireAuth, (req, res) => {
   });
 });
 
+// Live data for in-place updates — no full page reload
+router.get('/api/live', requireAuth, (req, res) => {
+  const db = getDb();
+  if (!db) return res.status(503).json({ ok: false });
+  try {
+    let marketStatus = {};
+    try {
+      const row = db.prepare("SELECT value FROM futures_settings WHERE key='market_status'").get();
+      if (row) marketStatus = JSON.parse(row.value);
+    } catch (_) {}
+
+    const opens = db.prepare(
+      "SELECT id, symbol, direction, contracts, entry_price, current_price FROM futures_trades WHERE status='open'"
+    ).all();
+    const openTrades = opens.map(t => {
+      const pv      = t.symbol === 'NQ' ? 20 : 50;
+      const curr    = t.current_price != null ? parseFloat(t.current_price) : null;
+      const entry   = parseFloat(t.entry_price);
+      const unreal  = curr != null ? (t.direction === 'long' ? curr - entry : entry - curr) * t.contracts * pv : null;
+      return { id: t.id, current: curr, unrealized: unreal != null ? Math.round(unreal * 100) / 100 : null };
+    });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const todayRow = db.prepare(
+      "SELECT COALESCE(SUM(pnl),0) as total FROM futures_trades WHERE status='closed' AND close_ts LIKE ?"
+    ).get(`${today}%`);
+    const allRow = db.prepare(
+      "SELECT COALESCE(SUM(pnl),0) as total FROM futures_trades WHERE status='closed'"
+    ).get();
+    const todayPnl   = todayRow ? parseFloat(todayRow.total) : 0;
+    const allTimePnl = allRow   ? parseFloat(allRow.total)   : 0;
+
+    res.json({ ok: true, marketStatus, openTrades, todayPnl, allTimePnl, netLiq: parseFloat((500 + allTimePnl).toFixed(2)) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    db.close();
+  }
+});
+
 router.post('/toggle-trading', requireAuth, (req, res) => {
   const db = getDb(false);
   if (!db) return res.status(503).json({ error: 'DB unavailable' });

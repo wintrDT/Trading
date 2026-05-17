@@ -143,7 +143,7 @@
     </div>
 
     <!-- Account Stats -->
-    <div class="fut-stat-bar">
+    <div id="live-stats" class="fut-stat-bar">
       <div class="fut-stat">
         <div class="fut-stat-label">NET LIQ</div>
         <div class="fut-stat-value <%= netLiq != null ? pclass(netLiq) : '' %>">
@@ -169,6 +169,7 @@
     </div>
 
     <!-- Market Status -->
+    <div id="live-market-status">
     <% if (marketStatus) {
       const symbols = ['ES','NQ'];
       const sessionLabel = marketStatus._session === 'orb' ? '🟡 ORB Window (9:30–10:00 AM)' : '🟢 Active';
@@ -232,9 +233,10 @@
       </div>
     </div>
     <% } %>
+    </div>
 
     <!-- Open Positions -->
-    <div class="card" style="margin-bottom:1.25rem;">
+    <div id="live-open-positions" class="card" style="margin-bottom:1.25rem;">
       <p class="sect-hdr">Open Positions</p>
       <% if (openTrades && openTrades.length > 0) { %>
       <div style="overflow-x:auto;">
@@ -599,12 +601,25 @@
     }
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDayModal(); });
 
-    // Auto-refresh every 15s, but skip while the day-detail modal is open
-    setInterval(() => {
-      if (!document.getElementById('dayModalBackdrop').classList.contains('open')) {
-        location.reload();
+    // Live update every 15s — swap only the price/position/stats sections, no full page reload.
+    // Skips while the day-detail modal is open so the user can read it.
+    async function refreshLiveSections() {
+      if (document.getElementById('dayModalBackdrop').classList.contains('open')) return;
+      try {
+        const r = await fetch(location.pathname, { headers: { 'Cache-Control': 'no-cache' } });
+        if (!r.ok) return;
+        const html = await r.text();
+        const dom  = new DOMParser().parseFromString(html, 'text/html');
+        for (const id of ['live-stats', 'live-market-status', 'live-open-positions']) {
+          const fresh = dom.getElementById(id);
+          const stale = document.getElementById(id);
+          if (fresh && stale) stale.replaceWith(fresh);
+        }
+      } catch (e) {
+        console.warn('live refresh failed:', e);
       }
-    }, 15000);
+    }
+    setInterval(refreshLiveSections, 15000);
   </script>
 </body>
 </html>
