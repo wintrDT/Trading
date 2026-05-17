@@ -302,6 +302,21 @@ def job_scan(client):
             signal, strategy = orb_dir, 'orb'
             blocked_by = None
 
+        # News bias gate — block trades that go against rolling headline sentiment.
+        # bias = 'long' means recent news is bullish; we won't take shorts against it.
+        # Extreme deviation (>= 2x threshold) overrides — price is already too stretched to ignore.
+        if signal:
+            bias = get_market_bias(FUTURES_DB_PATH, symbol)
+            if bias and bias != signal:
+                thresh = tuned_dev_long if signal == 'long' else tuned_dev_short
+                override = dev_pct is not None and abs(dev_pct) >= 2 * thresh
+                if not override:
+                    log.info('%s %s blocked by news bias (%s)', symbol, signal, bias)
+                    blocked_by = f'news bias ({bias})'
+                    signal, strategy = None, None
+                else:
+                    log.info('%s %s overrides news bias (%s) — extreme dev=%.3f%%', symbol, signal, bias, dev_pct)
+
         orb_hi = orb_state.high if orb_state._ready and orb_state.high != float('-inf') else None
         orb_lo = orb_state.low  if orb_state._ready and orb_state.low  != float('inf')  else None
         status_map[symbol] = {
