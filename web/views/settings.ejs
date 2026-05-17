@@ -27,6 +27,7 @@
         <div class="nav-dropdown-menu">
           <a href="/options">Options</a>
           <a href="/futures">Futures</a>
+          <a href="/crypto">Crypto</a>
         </div>
       </div>
       <a href="/settings" class="active">Settings</a>
@@ -265,6 +266,93 @@
       </form>
     </div>
     <% } %>
+
+    <!-- TopstepX broker integration -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">🎯</span> TopstepX — Funded Account Broker</div>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.6">
+        When filled in, the bot routes <strong>prices, orders, and account data</strong> through your TopstepX funded account.
+        Leave blank to keep using Tastytrade for prices and sim mode for orders. Bot detects credentials at startup.
+      </p>
+      <form method="POST" action="/settings/futures-topstepx">
+        <div style="display:grid;gap:.75rem">
+          <div>
+            <label class="form-label">Username</label>
+            <input type="text" name="topstep_username" class="form-input"
+              value="<%= topstepUsername %>" placeholder="TopstepX username">
+          </div>
+          <div>
+            <label class="form-label">API Key</label>
+            <input type="password" name="topstep_api_key" class="form-input"
+              placeholder="<%= hasTopstepKey ? '••••••••' : 'Enter TopstepX API key' %>">
+          </div>
+          <div>
+            <label class="form-label">Account ID</label>
+            <input type="text" name="topstep_account_id" class="form-input"
+              value="<%= topstepAccountId %>" placeholder="e.g. 12345">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="margin-top:1rem">Save</button>
+      </form>
+    </div>
+
+    <!-- Tastytrade off-hours futures data -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">⚡</span> Tastytrade — Off-Hours Futures Prices</div>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.6">
+        Provides real-time ES/NQ/GC prices via DXFeed outside NYSE hours (before 9 AM &amp; after 4 PM ET).
+        Uses your existing Tastytrade account — same credentials as the options bot.
+      </p>
+      <form method="POST" action="/settings/futures-tastytrade">
+        <div style="display:grid;gap:.75rem">
+          <div>
+            <label class="form-label">Provider Secret</label>
+            <input type="password" name="tt_provider_secret" class="form-input"
+              placeholder="<%= hasTtProvider ? '••••••••' : 'Enter provider secret' %>">
+          </div>
+          <div>
+            <label class="form-label">Refresh Token</label>
+            <input type="password" name="tt_refresh_token" class="form-input"
+              placeholder="<%= hasTtRefresh ? '••••••••' : 'Enter refresh token' %>">
+          </div>
+          <div>
+            <label class="form-label">Account Number</label>
+            <input type="text" name="tt_account_number" class="form-input"
+              value="<%= ttAccount %>" placeholder="e.g. 5WX12345">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="margin-top:1rem">Save</button>
+      </form>
+    </div>
+
+    <!-- News API Keys -->
+    <div class="card" style="margin-bottom:1.25rem">
+      <div class="card-header">
+        <div class="card-title"><span class="card-title-icon">📰</span> News API Keys</div>
+      </div>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.6">
+        Real-time news filters trades against bad market conditions.<br>
+        <strong>Crypto</strong> uses free RSS feeds (CoinDesk, CoinTelegraph) + the Fear &amp; Greed Index — <em>no key needed, runs automatically.</em><br>
+        <strong>Futures</strong> uses <strong>Finnhub</strong> (free at <strong>finnhub.io</strong>) for real-time SPY/QQQ/GLD headlines.
+      </p>
+      <form method="POST" action="/settings/news-keys">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Finnhub API Key (Futures) <% if (hasFinnhubKey) { %><span style="color:var(--green)">✅ saved</span><% } %></label>
+            <input type="text" name="finnhub_api_key" class="gen-input" style="width:100%;font-size:13px"
+                   placeholder="<%= hasFinnhubKey ? '●●●●●●●● (saved — paste new to replace)' : 'Paste Finnhub API key (register free at finnhub.io)' %>"
+                   autocomplete="off">
+          </div>
+          <div>
+            <button type="submit" class="btn-sm" style="font-size:12px;padding:8px 14px">Save</button>
+          </div>
+        </div>
+      </form>
+    </div>
 
     <!-- How it works -->
     <div class="card">

@@ -9,6 +9,7 @@ const { encrypt, decrypt } = require('../../utils/encrypt');
 
 const BOT_DB_PATH     = path.join(__dirname, '../../bot/data/options.db');
 const FUTURES_DB_PATH = path.join(__dirname, '../../bot/data/futures.db');
+const CRYPTO_DB_PATH  = path.join(__dirname, '../../bot/data/crypto.db');
 
 function getBotDb() {
   try { return new Database(BOT_DB_PATH, { fileMustExist: true }); } catch { return null; }
@@ -52,6 +53,29 @@ function setFuturesSetting(key, value) {
   } finally { fdb.close(); }
 }
 
+function getCryptoDb() {
+  try {
+    const cdb = new Database(CRYPTO_DB_PATH);
+    cdb.prepare('CREATE TABLE IF NOT EXISTS crypto_settings (key TEXT PRIMARY KEY, value TEXT)').run();
+    return cdb;
+  } catch { return null; }
+}
+function getCryptoSetting(key, def = '') {
+  const cdb = getCryptoDb();
+  if (!cdb) return def;
+  try {
+    const row = cdb.prepare('SELECT value FROM crypto_settings WHERE key=?').get(key);
+    return row ? row.value : def;
+  } finally { cdb.close(); }
+}
+function setCryptoSetting(key, value) {
+  const cdb = getCryptoDb();
+  if (!cdb) return;
+  try {
+    cdb.prepare("INSERT INTO crypto_settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, String(value));
+  } finally { cdb.close(); }
+}
+
 const PRIVATE_URL = 'https://trading-api.kalshi.com/trade-api/v2';
 
 router.get('/', requireAuth, (req, res) => {
@@ -69,6 +93,13 @@ router.get('/', requireAuth, (req, res) => {
     hasTvPassword:      !!getFuturesSetting('tv_password', ''),
     hasTvSec:           !!getFuturesSetting('tv_sec', ''),
     futuresTradingMode: getFuturesSetting('trading_mode', 'sim'),
+    hasFinnhubKey:      !!getFuturesSetting('finnhub_api_key', ''),
+    hasTtProvider:      !!getFuturesSetting('tt_provider_secret', ''),
+    hasTtRefresh:       !!getFuturesSetting('tt_refresh_token', ''),
+    ttAccount:          getFuturesSetting('tt_account_number', ''),
+    topstepUsername:    getFuturesSetting('topstep_username',   ''),
+    topstepAccountId:   getFuturesSetting('topstep_account_id', ''),
+    hasTopstepKey:      !!getFuturesSetting('topstep_api_key', ''),
     saved:              req.query.saved === '1',
     error:              null,
   });
@@ -164,9 +195,34 @@ router.post('/futures-tradovate', requireAuth, (req, res) => {
   res.redirect('/settings?saved=1');
 });
 
+// Save TopstepX credentials — bot uses TopstepX as full broker when these are set
+router.post('/futures-topstepx', requireAuth, (req, res) => {
+  const { topstep_username, topstep_api_key, topstep_account_id } = req.body;
+  if (topstep_username   !== undefined) setFuturesSetting('topstep_username',   topstep_username.trim());
+  if (topstep_api_key)                  setFuturesSetting('topstep_api_key',    topstep_api_key.trim());
+  if (topstep_account_id !== undefined) setFuturesSetting('topstep_account_id', topstep_account_id.trim());
+  res.redirect('/settings?saved=1');
+});
+
+// Save Tastytrade credentials for off-hours futures price data
+router.post('/futures-tastytrade', requireAuth, (req, res) => {
+  const { tt_provider_secret, tt_refresh_token, tt_account_number } = req.body;
+  if (tt_provider_secret) setFuturesSetting('tt_provider_secret', tt_provider_secret.trim());
+  if (tt_refresh_token)   setFuturesSetting('tt_refresh_token',   tt_refresh_token.trim());
+  if (tt_account_number !== undefined) setFuturesSetting('tt_account_number', tt_account_number.trim());
+  res.redirect('/settings?saved=1');
+});
+
 router.post('/futures-trading-mode', requireAuth, (req, res) => {
   const mode = req.body.mode === 'live' ? 'live' : 'sim';
   setFuturesSetting('trading_mode', mode);
+  res.redirect('/settings?saved=1');
+});
+
+// Save news API keys
+router.post('/news-keys', requireAuth, (req, res) => {
+  const { finnhub_api_key } = req.body;
+  if (finnhub_api_key) setFuturesSetting('finnhub_api_key', finnhub_api_key.trim());
   res.redirect('/settings?saved=1');
 });
 

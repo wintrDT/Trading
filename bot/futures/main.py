@@ -9,41 +9,116 @@ from apscheduler.triggers.cron import CronTrigger
 
 from bot.futures.config import (
     FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
-    TIMEZONE, MARKET_OPEN, MARKET_CLOSE, ORB_END,
-    AV_API_KEY,
+    TIMEZONE, MARKET_CLOSE_HOUR, MARKET_OPEN_HOUR, ORB_START, ORB_END,
+    AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS,
 )
 from bot.futures.db import (
-    init_db, insert_signal, get_daily_pnl, get_setting,
+    init_db, insert_signal, get_daily_pnl, get_setting, set_setting,
     insert_snapshot, get_today_event_times,
 )
 from bot.futures.news import fetch_and_store_news
 from bot.futures.tradovate_client import TradovateClient
-from bot.futures.strategy import VWAPState, ORBState, calc_vwap, check_vwap_signal, check_orb_signal
+from bot.futures.price_feed import get_prices as get_yf_prices, get_price_history
+from bot.tt_client import TastytradeClient as _TastyClient
+from bot.futures.strategy import VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState, calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter
 from bot.futures.risk import is_daily_loss_limit_hit
+from bot.futures.db import get_market_bias
 from bot.futures.trader import place_entry
 from bot.futures.manager import manage_futures_positions
+from bot.futures.tuner import run_tuner
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
 
 ET = pytz.timezone(TIMEZONE)
 
-_vwap_states: dict = {}
-_orb_states:  dict = {}
+_vwap_states:    dict = {}
+_orb_states:     dict = {}
+_channel_states: dict = {}
+_sma_states:     dict = {}
+_rsi_states:     dict = {}
+_vol_states:     dict = {}
+_peak_dev:       dict = {}   # symbol -> {'side': 'long'|'short', 'peak': dev_pct} — reversion confirmation
 
 
-def _is_market_hours():
+def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.25):
+    """VWAP reversion with bounce confirmation.
+
+    Tracks peak deviation while price is extended. Returns a direction only after
+    price has retraced `retrace` fraction back toward VWAP from the peak.
+    Avoids entering while a move is still accelerating away from VWAP.
+    """
+    state = _peak_dev.get(symbol)
+
+    # Stale state — price crossed VWAP, abandon pending entry
+    if state and ((state['side'] == 'long'  and dev_pct >= 0) or
+                  (state['side'] == 'short' and dev_pct <= 0)):
+        _peak_dev.pop(symbol, None)
+        state = None
+
+    if dev_pct <= -thresh_long:
+        if state is None or state['side'] != 'long':
+            _peak_dev[symbol] = {'side': 'long', 'peak': dev_pct}
+            return None
+        if dev_pct < state['peak']:
+            state['peak'] = dev_pct  # still extending — update peak, wait
+            return None
+        if abs(dev_pct - state['peak']) / abs(state['peak']) >= retrace:
+            _peak_dev.pop(symbol, None)
+            return 'long'
+        return None
+
+    if dev_pct >= thresh_short:
+        if state is None or state['side'] != 'short':
+            _peak_dev[symbol] = {'side': 'short', 'peak': dev_pct}
+            return None
+        if dev_pct > state['peak']:
+            state['peak'] = dev_pct
+            return None
+        if (state['peak'] - dev_pct) / state['peak'] >= retrace:
+            _peak_dev.pop(symbol, None)
+            return 'short'
+        return None
+
+    # Inside threshold band but state pending — fire if bounce already crossed retrace target
+    if state:
+        if state['side'] == 'long' and abs(dev_pct - state['peak']) / abs(state['peak']) >= retrace:
+            _peak_dev.pop(symbol, None)
+            return 'long'
+        if state['side'] == 'short' and (state['peak'] - dev_pct) / state['peak'] >= retrace:
+            _peak_dev.pop(symbol, None)
+            return 'short'
+
+    return None
+
+
+def _rsi_momentum_ok(rsi: float | None, direction: str) -> bool:
+    """Momentum RSI filter: confirm direction, only block extreme exhaustion."""
+    if rsi is None:
+        return True
+    if direction == 'long':
+        return rsi > 40          # needs upward momentum; block weak/bearish RSI
+    if direction == 'short':
+        return rsi < 60          # needs downward momentum; block strong/bullish RSI
+    return True
+
+
+def _is_market_hours(has_realtime: bool = False):
     now = datetime.now(ET).time()
-    oh, om = map(int, MARKET_OPEN.split(':'))
-    ch, cm = map(int, MARKET_CLOSE.split(':'))
-    return _Time(oh, om) <= now <= _Time(ch, cm)
+    # Only skip the 5–6 PM ET maintenance window
+    return not (_Time(17, 0) <= now < _Time(18, 0))
 
 
 def _is_orb_period():
     now = datetime.now(ET).time()
-    oh, om = map(int, MARKET_OPEN.split(':'))
+    sh, sm = map(int, ORB_START.split(':'))
     eh, em = map(int, ORB_END.split(':'))
-    return _Time(oh, om) <= now < _Time(eh, em)
+    return _Time(sh, sm) <= now < _Time(eh, em)
+
+
+def _orb_start_minute():
+    h, m = map(int, ORB_START.split(':'))
+    return h * 60 + m
 
 
 def _orb_end_minute():
@@ -57,20 +132,58 @@ def _now_minute():
 
 
 def _reset_daily_state():
-    global _vwap_states, _orb_states
-    _vwap_states = {s: VWAPState() for s in SYMBOLS}
-    _orb_states  = {s: ORBState()  for s in SYMBOLS}
-    log.info('Daily state reset — VWAP and ORB cleared')
+    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev
+    _vwap_states    = {s: VWAPState()        for s in SYMBOLS}
+    _orb_states     = {s: ORBState()         for s in SYMBOLS}
+    _channel_states = {s: ChannelState()     for s in SYMBOLS}
+    _sma_states     = {s: SMAState()         for s in SYMBOLS}
+    _rsi_states     = {s: RSIState()         for s in SYMBOLS}
+    _vol_states     = {s: VolatilityState()  for s in SYMBOLS}
+    _peak_dev       = {}
+    log.info('Daily state reset — VWAP, ORB, channel, SMA, RSI, volatility, and pending entries cleared')
+
+
+def _warmup_state():
+    """Pre-load today's intraday bars into all states so strategies fire immediately after restart."""
+    import yfinance as yf
+    from bot.futures.price_feed import _YF_MAP
+    today = datetime.now(ET).strftime('%Y-%m-%d')
+    for symbol in SYMBOLS:
+        ticker = _YF_MAP.get(symbol)
+        history = []
+        if ticker:
+            try:
+                hist = yf.Ticker(ticker).history(period='1d', interval='1m')
+                if not hist.empty:
+                    history = [float(p) for p in hist['Close'].tolist() if not __import__('math').isnan(p)]
+            except Exception:
+                pass
+        if not history:
+            history = get_price_history(symbol, bars=30)
+        if not history:
+            log.warning('No history available for %s', symbol)
+            continue
+        for price in history:
+            _channel_states[symbol].update(price)
+            _sma_states[symbol].update(price)
+            _rsi_states[symbol].update(price)
+            _vol_states[symbol].update(price)
+            _vwap_states[symbol].add_bar(price=price, volume=1)
+        log.info('%s warmed up with %d intraday bars', symbol, len(history))
 
 
 def job_scan(client):
-    if not _is_market_hours():
+    if not _is_market_hours(has_realtime=client is not None):
         return
 
     today     = datetime.now(ET).strftime('%Y-%m-%d')
     daily_pnl = get_daily_pnl(FUTURES_DB_PATH, today)
     if is_daily_loss_limit_hit(daily_pnl, RISK_RULES['daily_loss_limit']):
         log.warning('Daily loss limit hit ($%.2f) — skipping scan', daily_pnl)
+        return
+
+    if get_setting(FUTURES_DB_PATH, 'trading_paused', 'false') == 'true':
+        log.debug('Trading paused — skipping entries')
         return
 
     sim = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
@@ -84,15 +197,22 @@ def job_scan(client):
         return
 
     try:
-        prices = client.get_current_prices(SYMBOLS, timeout=20)
+        prices = get_yf_prices(SYMBOLS, tradovate_client=client)
     except Exception:
         log.exception('Failed to fetch prices')
         return
 
-    orb_period  = _is_orb_period()
-    orb_end_min = _orb_end_minute()
-    now_min     = _now_minute()
-    now_iso     = datetime.now(ET).isoformat()
+    if not prices:
+        log.warning('No prices returned — skipping scan, preserving last market status')
+        return
+
+    orb_period    = _is_orb_period()
+    orb_start_min = _orb_start_minute()
+    orb_end_min   = _orb_end_minute()
+    now_min       = _now_minute()
+    now_iso       = datetime.now(ET).isoformat()
+
+    status_map = {}
 
     for symbol in SYMBOLS:
         price = prices.get(symbol)
@@ -100,9 +220,17 @@ def job_scan(client):
             continue
 
         tick = TICK_INFO[symbol]['tick']
-        vwap_state = _vwap_states.setdefault(symbol, VWAPState())
-        orb_state  = _orb_states.setdefault(symbol, ORBState())
+        vwap_state    = _vwap_states.setdefault(symbol, VWAPState())
+        orb_state     = _orb_states.setdefault(symbol, ORBState())
+        channel_state = _channel_states.setdefault(symbol, ChannelState())
+        sma_state     = _sma_states.setdefault(symbol, SMAState())
+        rsi_state     = _rsi_states.setdefault(symbol, RSIState())
+        vol_state     = _vol_states.setdefault(symbol, VolatilityState())
 
+        channel_state.update(price)
+        sma_state.update(price)
+        rsi_state.update(price)
+        vol_state.update(price)
         vwap_state.add_bar(price=price, volume=1)
 
         if not orb_state._ready and now_min >= orb_end_min:
@@ -110,21 +238,88 @@ def job_scan(client):
 
         if orb_period:
             orb_state.update(price=price, ts_minute=now_min)
+            orb_hi = orb_state.high if orb_state.high != float('-inf') else None
+            orb_lo = orb_state.low  if orb_state.low  != float('inf')  else None
+            status_map[symbol] = {'price': price, 'session': 'orb', 'orb_high': orb_hi, 'orb_low': orb_lo}
             continue
 
+        rsi     = rsi_state.value()
         vwap    = calc_vwap(vwap_state)
+        sma     = sma_state.value()
         signal  = None
         strategy = None
+        blocked_by = None
 
-        if vwap is not None:
-            direction = check_vwap_signal(price, vwap, STRATEGY_PARAMS['vwap_deviation_pct'])
+        vwap_pct = SYMBOL_VWAP_PCT.get(symbol, STRATEGY_PARAMS['vwap_deviation_pct'])
+        dev_pct  = round((price - vwap) / vwap * 100, 4) if vwap else None
+        trend    = ('up' if price > sma else 'down') if sma else None
+
+        # Adaptive threshold: use rolling volatility when available, else config default
+        dynamic_threshold = vol_state.threshold() or vwap_pct
+
+        # Read tuned thresholds — fall back to dynamic/config until tuner has enough data
+        sym_l = symbol.lower()
+        tuned_rsi_long  = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_long_rsi',  40))
+        tuned_rsi_short = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_short_rsi', 60))
+        tuned_dev_long  = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_long_dev',  dynamic_threshold))
+        tuned_dev_short = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_short_dev', dynamic_threshold))
+
+        if vwap is not None and dev_pct is not None:
+            # Bounce-confirmed reversion: only enter after price retraces 25% from peak deviation
+            direction = _check_reversion_entry(symbol, dev_pct, tuned_dev_long, tuned_dev_short)
+
+            pending = _peak_dev.get(symbol)
+            if direction is None and pending:
+                blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
+
+            # SMA trend filter — extreme deviations (>= 2x threshold) override.
+            # Symmetric: block counter-trend reversions unless price is truly stretched.
+            if direction == 'long':
+                extreme = abs(dev_pct) >= 2 * tuned_dev_long
+                if trend == 'down' and not extreme:
+                    direction = None
+                    blocked_by = 'trend=down,weak dip'
+            elif direction == 'short':
+                extreme = abs(dev_pct) >= 2 * tuned_dev_short
+                if trend == 'up' and not extreme:
+                    direction = None
+                    blocked_by = 'trend=up,weak pop'
+
             if direction:
-                signal, strategy = direction, 'vwap'
+                # Reversion RSI: with bounce already confirmed, block entries where RSI shows
+                # the move is mostly done — preserves freshness without being too restrictive.
+                rsi_ok = (rsi is None or
+                          (direction == 'long'  and rsi < 70) or
+                          (direction == 'short' and rsi > 30))
+                if not rsi_ok:
+                    blocked_by = f'rsi={round(rsi, 1) if rsi else "?"}'
+                else:
+                    signal, strategy = direction, 'vwap'
 
         orb_dir = check_orb_signal(price, orb_state, orb_end_min,
                                     STRATEGY_PARAMS['orb_min_range_ticks'], tick)
         if orb_dir:
             signal, strategy = orb_dir, 'orb'
+            blocked_by = None
+
+        orb_hi = orb_state.high if orb_state._ready and orb_state.high != float('-inf') else None
+        orb_lo = orb_state.low  if orb_state._ready and orb_state.low  != float('inf')  else None
+        status_map[symbol] = {
+            'price':     price,
+            'vwap':      round(vwap, 2) if vwap else None,
+            'dev_pct':   dev_pct,
+            'threshold': round((tuned_dev_long + tuned_dev_short) / 2, 4),
+            'sma':       round(sma, 2) if sma else None,
+            'rsi':       round(rsi, 1) if rsi else None,
+            'trend':     trend,
+            'signal':    signal,
+            'blocked_by': blocked_by,
+            'session':   'active',
+            'orb_high':  round(orb_hi, 2) if orb_hi else None,
+            'orb_low':   round(orb_lo, 2) if orb_lo else None,
+        }
+
+        # Channel disabled — stale data causes it to buy tops and sell bottoms
 
         if signal is None:
             continue
@@ -136,19 +331,31 @@ def job_scan(client):
             'orb_low':  orb_state.low  if orb_state._ready else None,
             'traded': 0,
         })
-        log.info('Signal: %s %s %s @ %.2f', strategy, signal, symbol, price)
+        contracts = 2 if dev_pct is not None and abs(dev_pct) >= 2 * dynamic_threshold else 1
+        log.info('Signal: %s %s %s @ %.2f contracts=%d', strategy, signal, symbol, price, contracts)
         place_entry(client, FUTURES_DB_PATH, {
             'symbol': symbol, 'strategy': strategy,
             'direction': signal, 'price': price, 'signal_id': signal_id,
-        }, contracts=1, sim=sim)
+            'entry_rsi': rsi, 'entry_dev_pct': dev_pct, 'vwap': vwap,
+            'trend': trend,
+        }, contracts=contracts, sim=sim)
+
+    # Persist status so the dashboard can show live conditions
+    import json as _json
+    try:
+        status_map['_session'] = 'orb' if orb_period else 'active'
+        status_map['_ts'] = now_iso
+        set_setting(FUTURES_DB_PATH, 'market_status', _json.dumps(status_map))
+    except Exception:
+        pass
 
 
 def job_manage(client):
-    if not _is_market_hours():
+    if not _is_market_hours(has_realtime=client is not None):
         return
     try:
-        prices = client.get_current_prices(SYMBOLS, timeout=15)
-        sim    = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
+        prices = get_yf_prices(SYMBOLS, tradovate_client=client)
+        sim = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
         manage_futures_positions(client, FUTURES_DB_PATH, current_prices=prices, sim=sim)
     except Exception:
         log.exception('Manager error')
@@ -156,13 +363,26 @@ def job_manage(client):
 
 def job_snapshot(client):
     try:
-        bal = client.get_account_balance()
+        if client is not None:
+            bal = client.get_account_balance()
+            net_liq = float(bal.get('netLiquidatingValue', 0))
+            cash    = float(bal.get('cashBalance', 0))
+            open_pnl = float(bal.get('openTradeEquity', 0))
+            realized = float(bal.get('realizedPnL', 0))
+        else:
+            # Sim mode — derive from DB
+            from bot.futures.db import get_all_time_pnl
+            today = datetime.now(ET).strftime('%Y-%m-%d')
+            realized = get_daily_pnl(FUTURES_DB_PATH, today)
+            net_liq  = 500.0 + get_all_time_pnl(FUTURES_DB_PATH)
+            cash     = net_liq
+            open_pnl = 0.0
         insert_snapshot(FUTURES_DB_PATH, {
             'ts':                 datetime.now(ET).isoformat(),
-            'net_liq':            float(bal.get('netLiquidatingValue', 0)),
-            'cash':               float(bal.get('cashBalance', 0)),
-            'open_pnl':           float(bal.get('openTradeEquity', 0)),
-            'realized_pnl_today': float(bal.get('realizedPnL', 0)),
+            'net_liq':            net_liq,
+            'cash':               cash,
+            'open_pnl':           open_pnl,
+            'realized_pnl_today': realized,
         })
     except Exception:
         log.exception('Snapshot error')
@@ -170,7 +390,8 @@ def job_snapshot(client):
 
 def job_news():
     try:
-        fetch_and_store_news(FUTURES_DB_PATH, AV_API_KEY)
+        fh_key = get_setting(FUTURES_DB_PATH, 'finnhub_api_key', '')
+        fetch_and_store_news(FUTURES_DB_PATH, AV_API_KEY, finnhub_api_key=fh_key)
     except Exception:
         log.exception('News fetch error')
 
@@ -178,6 +399,7 @@ def job_news():
 def main():
     init_db(FUTURES_DB_PATH)
     _reset_daily_state()
+    _warmup_state()
 
     tv_username  = get_setting(FUTURES_DB_PATH, 'tv_username',  '')
     tv_password  = get_setting(FUTURES_DB_PATH, 'tv_password',  '')
@@ -186,17 +408,43 @@ def main():
     tv_device_id = get_setting(FUTURES_DB_PATH, 'tv_device_id', 'sharp-bot-futures-001')
     tv_demo      = get_setting(FUTURES_DB_PATH, 'tv_demo',      'true').lower() == 'true'
 
-    if not tv_username or not tv_password:
-        log.error('Tradovate credentials not configured. Set them in Settings → Tradovate.')
-        return
+    sim = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
+    client = None
 
-    client = TradovateClient(tv_username, tv_password, tv_cid, tv_sec,
-                             demo=tv_demo, device_id=tv_device_id)
-    try:
-        client.connect()
-    except Exception:
-        log.exception('Failed to connect to Tradovate — exiting')
-        return
+    # Broker selection priority:
+    #   1. TopstepX (when configured) — full replacement: prices + orders + account
+    #   2. Tastytrade DXFeed (fallback) — prices only, no order routing
+    #   3. None — sim mode, prices via Finnhub/Yahoo Finance
+    import os
+    ts_user    = get_setting(FUTURES_DB_PATH, 'topstep_username',   '') or os.environ.get('TOPSTEP_USERNAME', '')
+    ts_key     = get_setting(FUTURES_DB_PATH, 'topstep_api_key',    '') or os.environ.get('TOPSTEP_API_KEY',  '')
+    ts_account = get_setting(FUTURES_DB_PATH, 'topstep_account_id', '') or os.environ.get('TOPSTEP_ACCOUNT',  '')
+    if ts_user and ts_key and ts_account:
+        try:
+            from bot.futures.topstep_client import TopstepXClient
+            ts = TopstepXClient(ts_user, ts_key, ts_account)
+            if ts.connect():
+                client = ts
+                log.info('TopstepX connected — prices + orders + account routing through TopStep')
+            else:
+                log.warning('TopstepX credentials set but connect() returned False — falling back')
+        except Exception:
+            log.exception('TopstepX connection failed — falling back to Tastytrade')
+
+    if client is None:
+        tt_provider = get_setting(FUTURES_DB_PATH, 'tt_provider_secret', '') or os.environ.get('TT_SECRET', '')
+        tt_refresh  = get_setting(FUTURES_DB_PATH, 'tt_refresh_token',   '') or os.environ.get('TT_REFRESH', '')
+        tt_account  = get_setting(FUTURES_DB_PATH, 'tt_account_number',  '') or os.environ.get('TT_ACCOUNT', '')
+        if tt_provider and tt_refresh and tt_account:
+            try:
+                tt = _TastyClient(tt_provider, tt_refresh, tt_account)
+                tt.connect()
+                client = tt
+                log.info('Tastytrade DXFeed connected — real-time futures prices off-hours')
+            except Exception:
+                log.exception('Tastytrade connection failed — falling back to Finnhub/Yahoo Finance')
+        else:
+            log.info('No broker credentials — sim mode, prices via Finnhub/Yahoo Finance')
 
     def _scan():     job_scan(client)
     def _manage():   job_manage(client)
@@ -204,14 +452,28 @@ def main():
     def _reset():    _reset_daily_state()
 
     scheduler = BlockingScheduler(timezone=ET)
-    scheduler.add_job(_scan,     IntervalTrigger(seconds=45, timezone=ET), id='scan')
+    scheduler.add_job(_scan,     IntervalTrigger(seconds=30, timezone=ET), id='scan')
     scheduler.add_job(_manage,   IntervalTrigger(seconds=15, timezone=ET), id='manage')
-    scheduler.add_job(_snapshot, CronTrigger(day_of_week='mon-fri', hour='10-15', minute=0, timezone=ET), id='snapshot')
-    scheduler.add_job(_reset,    CronTrigger(day_of_week='mon-fri', hour=9, minute=29, timezone=ET), id='reset')
-    scheduler.add_job(job_news,  CronTrigger(day_of_week='mon-fri', hour='8-16', minute=0, timezone=ET), id='news')
-    scheduler.add_job(job_news,  'date', run_date=datetime.now(ET), id='news_startup')
+    # Snapshot every hour during active session (6 PM – 5 PM next day, skip 5–6 PM window)
+    scheduler.add_job(_snapshot, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='snapshot')
+    # Reset VWAP/ORB at 6 PM ET — start of new futures session
+    scheduler.add_job(_reset,    CronTrigger(hour=18, minute=0, timezone=ET), id='reset')
+    # Auto-tuner — runs every 2 hours, adjusts RSI/VWAP thresholds based on trade history
+    scheduler.add_job(lambda: run_tuner(FUTURES_DB_PATH), CronTrigger(hour='9-16', minute=0, second=0, timezone=ET), id='tuner')
 
-    log.info('Futures bot running [%s]. Ctrl+C to stop.', 'DEMO' if tv_demo else 'LIVE')
+    # News every 2 min — uses Finnhub when key is set, falls back to yfinance
+    def job_news_frequent():
+        try:
+            fh_key = get_setting(FUTURES_DB_PATH, 'finnhub_api_key', '')
+            yf_only = not bool(fh_key)  # use full fetch when Finnhub key is set
+            fetch_and_store_news(FUTURES_DB_PATH, AV_API_KEY, finnhub_api_key=fh_key, yf_only=yf_only)
+        except Exception: log.exception('news fetch error')
+    scheduler.add_job(job_news_frequent, IntervalTrigger(seconds=30, timezone=ET), id='news_frequent')
+    # Full fetch (Nasdaq calendar + AV) once per hour
+    scheduler.add_job(job_news, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='news_full')
+    scheduler.add_job(job_news, 'date', run_date=datetime.now(ET), id='news_startup')
+
+    log.info('Futures bot running [%s]. Ctrl+C to stop.', 'SIM' if sim else ('DEMO' if tv_demo else 'LIVE'))
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
