@@ -141,9 +141,24 @@ def insert_trade(db_path, trade):
         return conn.execute(sql, {'entry_rsi': None, 'entry_dev_pct': None, **trade}).lastrowid
 
 
-def update_trade_price(db_path, trade_id, current_price):
+def update_trade_price(db_path, trade_id, current_price, new_stop=None):
+    """Update current_price (always) and optionally stop_price (when trailing stop moves).
+
+    The new_stop param was missing for the bot's lifetime — every trailing-stop
+    computation in manager.py was being thrown away on the next iteration because
+    the new stop was only ever assigned to a local variable, never persisted.
+    """
     with _conn(db_path) as conn:
-        cur = conn.execute("UPDATE futures_trades SET current_price=? WHERE id=?", (current_price, trade_id))
+        if new_stop is not None:
+            cur = conn.execute(
+                "UPDATE futures_trades SET current_price=?, stop_price=? WHERE id=?",
+                (current_price, new_stop, trade_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE futures_trades SET current_price=? WHERE id=?",
+                (current_price, trade_id),
+            )
         if cur.rowcount == 0:
             raise ValueError(f"No futures trade with id={trade_id}")
 

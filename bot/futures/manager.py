@@ -30,8 +30,6 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
             log.warning('No price for %s — skipping', symbol)
             continue
 
-        update_trade_price(db_path, trade['id'], current_price)
-
         stop      = float(trade['stop_price'])
         entry     = float(trade['entry_price'])
         target    = float(trade['target_price'])
@@ -64,8 +62,10 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
         if new_stop != stop:
             stop = new_stop
             trade = {**trade, 'stop_price': stop}
-            update_trade_price(db_path, trade['id'], current_price)
+            update_trade_price(db_path, trade['id'], current_price, new_stop=stop)
             log.info('Stop trailed to %.2f for %s trade id=%s', stop, symbol, trade['id'])
+        else:
+            update_trade_price(db_path, trade['id'], current_price)
 
         reason = should_exit(trade['direction'], current_price, stop, target)
 

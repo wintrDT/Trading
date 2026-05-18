@@ -272,18 +272,15 @@ def job_scan(client):
             if direction is None and pending:
                 blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
 
-            # SMA trend filter — extreme deviations (>= 2x threshold) override.
-            # Symmetric: block counter-trend reversions unless price is truly stretched.
-            if direction == 'long':
-                extreme = abs(dev_pct) >= 2 * tuned_dev_long
-                if trend == 'down' and not extreme:
-                    direction = None
-                    blocked_by = 'trend=down,weak dip'
-            elif direction == 'short':
-                extreme = abs(dev_pct) >= 2 * tuned_dev_short
-                if trend == 'up' and not extreme:
-                    direction = None
-                    blocked_by = 'trend=up,weak pop'
+            # Hard trend filter — NO counter-trend reversions, even at extreme deviation.
+            # Audit showed 7 consecutive NQ long stop-outs (-$440) when extreme override
+            # was letting longs fire into downtrends. The "bounce" before knife continues.
+            if direction == 'long' and trend == 'down':
+                direction = None
+                blocked_by = 'trend=down (no longs)'
+            elif direction == 'short' and trend == 'up':
+                direction = None
+                blocked_by = 'trend=up (no shorts)'
 
             if direction:
                 # Reversion RSI: with bounce already confirmed, block entries where RSI shows
@@ -473,8 +470,11 @@ def main():
     scheduler.add_job(_snapshot, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='snapshot')
     # Reset VWAP/ORB at 6 PM ET — start of new futures session
     scheduler.add_job(_reset,    CronTrigger(hour=18, minute=0, timezone=ET), id='reset')
-    # Auto-tuner — runs every 2 hours, adjusts RSI/VWAP thresholds based on trade history
-    scheduler.add_job(lambda: run_tuner(FUTURES_DB_PATH), CronTrigger(hour='9-16', minute=0, second=0, timezone=ET), id='tuner')
+    # Auto-tuner DISABLED — it was learning from a mix of old/new strategy trades
+    # and writing bad thresholds (tune_nq_long_dev=0.14 contributed to 7 consecutive
+    # NQ long stop-outs). Re-enable only after we have 30+ clean trades per direction
+    # under the new strategy.
+    # scheduler.add_job(lambda: run_tuner(FUTURES_DB_PATH), CronTrigger(hour='9-16', minute=0, second=0, timezone=ET), id='tuner')
 
     # News every 2 min — uses Finnhub when key is set, falls back to yfinance
     def job_news_frequent():
