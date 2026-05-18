@@ -219,6 +219,8 @@
             <div style="margin-top:0.5rem;font-size:0.74rem;">
               <% if (s.signal) { %>
                 <span style="color:#00d4a0;font-weight:700;">⚡ SIGNAL: <%= s.signal.toUpperCase() %></span>
+              <% } else if (s.blocked_by && s.blocked_by.startsWith('pending ')) { %>
+                <span style="color:#64b4ff;font-weight:600;">🎯 armed <%= s.blocked_by.replace('pending ', '') %></span>
               <% } else if (s.blocked_by) { %>
                 <span style="color:#f5a623;">⛔ blocked by <%= s.blocked_by %></span>
               <% } else if (pctLeft != null) { %>
