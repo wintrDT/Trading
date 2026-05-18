@@ -63,11 +63,12 @@ SYMBOL_RISK = {
 }
 
 # Per-symbol blocked ET hours — block entries during hours that historically lose money.
-# Derived from 60-day audit: ES 09:00 (pre-ORB chop), 14:00-16:00 (afternoon chop),
-# 22:00-23:00 (overnight sell-off zone). NQ stays consistent so no block.
+# 09:00 + 14-16 ET removed for re-test after the trailing-stop bug fix (those losses
+# were partly trail-bug victims, not bad-hour victims). Only 22-23 ET kept blocked —
+# at 22:00 the bot was direction-wrong 6/7 times (14% WR), which is regime, not trail.
 BLOCKED_HOURS_ET = {
-    'ES': {9, 14, 15, 16, 22, 23},
-    'NQ': {16},  # mildly bad
+    'ES': {22, 23},
+    'NQ': set(),
 }
 
 TIMEZONE    = 'America/New_York'
