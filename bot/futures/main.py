@@ -344,7 +344,7 @@ def job_scan(client):
             'symbol': symbol, 'strategy': strategy,
             'direction': signal, 'price': price, 'signal_id': signal_id,
             'entry_rsi': rsi, 'entry_dev_pct': dev_pct, 'vwap': vwap,
-            'trend': trend,
+            'trend': trend, 'atr': vol_state.atr(),
         }, contracts=contracts, sim=sim)
 
     # Persist status so the dashboard can show live conditions

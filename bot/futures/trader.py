@@ -44,6 +44,16 @@ def place_entry(client, db_path, signal, contracts, sim=False):
     else:
         stop_ticks   = risk['stop_ticks']
         target_ticks = risk['target_ticks']
+
+    # ATR-adaptive stop: 3x average price move per bar, clamped to [0.5x, 2.5x] of the fixed-tick stop.
+    # On calm days -> tighter stop (less loss when hit). On wild days -> wider stop (survive noise).
+    atr = signal.get('atr')
+    if atr is not None and atr > 0:
+        atr_stop_ticks = round(atr * 3 / tick)
+        floor_ticks    = max(4, stop_ticks // 2)
+        ceiling_ticks  = stop_ticks * 2 + (stop_ticks // 2)  # 2.5x the fixed stop
+        stop_ticks     = max(floor_ticks, min(ceiling_ticks, atr_stop_ticks))
+
     stop_price   = calc_stop_price(direction, price, stop_ticks, tick)
 
     # Use VWAP as natural reversion target when available — snap to nearest tick
@@ -83,8 +93,12 @@ def place_entry(client, db_path, signal, contracts, sim=False):
             mark_signal_traded(db_path, signal_id)
         except ValueError:
             pass
-    log.info('Entry: %s %s %s @ %.2f stop=%.2f target=%.2f%s',
-             direction, symbol, signal['strategy'], price, stop_price, target_price,
+    stop_distance_ticks = round(abs(price - stop_price) / tick)
+    log.info('Entry: %s %s %s @ %.2f stop=%.2f (%d ticks, ATR=%s) target=%.2f%s',
+             direction, symbol, signal['strategy'], price, stop_price,
+             stop_distance_ticks,
+             f'{atr:.3f}' if atr else 'n/a',
+             target_price,
              ' [SIM]' if sim else '')
     return trade_id
 
