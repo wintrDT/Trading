@@ -1,7 +1,7 @@
 # bot/futures/trader.py
 import logging
 from datetime import datetime, timezone
-from bot.futures.config import TICK_INFO, RISK_RULES, SYMBOL_RISK
+from bot.futures.config import TICK_INFO, RISK_RULES, SYMBOL_RISK, TOPSTEP_RULES
 from bot.futures.risk import calc_stop_price, calc_target_price, calc_pnl
 from bot.futures.db import insert_trade, update_trade_closed, mark_signal_traded, get_open_trades, get_last_close_info
 
@@ -13,6 +13,12 @@ def place_entry(client, db_path, signal, contracts, sim=False):
     direction = signal['direction']
     price     = float(signal['price'])
     signal_id = signal.get('signal_id')
+
+    # Hard cap contracts at the TopStep safe limit, regardless of conviction-based sizing
+    max_allowed = min(TOPSTEP_RULES.get('max_contracts', 2), RISK_RULES.get('max_contracts', 2))
+    if contracts > max_allowed:
+        log.info('Capping %s entry contracts %d -> %d (TopStep limit)', symbol, contracts, max_allowed)
+        contracts = max_allowed
 
     if any(t['symbol'] == symbol for t in get_open_trades(db_path)):
         log.info('Skipping %s %s — already have open trade', symbol, direction)

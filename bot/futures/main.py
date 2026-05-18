@@ -11,6 +11,7 @@ from bot.futures.config import (
     FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
     TIMEZONE, MARKET_CLOSE_HOUR, MARKET_OPEN_HOUR, ORB_START, ORB_END,
     AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS, BLOCKED_HOURS_ET,
+    TOPSTEP_RULES,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_setting, set_setting,
@@ -416,6 +417,34 @@ def job_news():
         log.exception('News fetch error')
 
 
+def job_eod_flat(client):
+    """Force-close every open position before TopStep's EOD flat cutoff.
+
+    TopStep funded/eval accounts require all positions flat by 4:10 PM ET
+    (3:10 PM CT). We run this job a few minutes before that, close every open
+    trade at the current price with close_reason='eod_flat'.
+    """
+    from bot.futures.db import get_open_trades
+    from bot.futures.trader import close_trade
+    try:
+        opens = get_open_trades(FUTURES_DB_PATH)
+        if not opens:
+            log.info('EOD flat: no open positions, nothing to do')
+            return
+        prices = get_yf_prices(SYMBOLS, tradovate_client=client) if client else {}
+        sim    = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
+        for trade in opens:
+            symbol = trade['symbol']
+            current = prices.get(symbol) or float(trade.get('current_price') or trade['entry_price'])
+            log.warning('EOD flat: closing %s %s id=%s @ %.2f', symbol, trade['direction'], trade['id'], current)
+            try:
+                close_trade(client, FUTURES_DB_PATH, trade, current, 'eod_flat', sim=sim)
+            except Exception:
+                log.exception('EOD flat: failed to close trade id=%s', trade['id'])
+    except Exception:
+        log.exception('EOD flat job error')
+
+
 def main():
     init_db(FUTURES_DB_PATH)
     _reset_daily_state()
@@ -478,6 +507,12 @@ def main():
     scheduler.add_job(_snapshot, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='snapshot')
     # Reset VWAP/ORB at 6 PM ET — start of new futures session
     scheduler.add_job(_reset,    CronTrigger(hour=18, minute=0, timezone=ET), id='reset')
+    # EOD flat — close every open position before TopStep's 4:10 PM ET cutoff
+    scheduler.add_job(
+        lambda: job_eod_flat(client),
+        CronTrigger(hour=TOPSTEP_RULES['eod_flat_hour_et'], minute=TOPSTEP_RULES['eod_flat_minute'], timezone=ET),
+        id='eod_flat',
+    )
     # Auto-tuner DISABLED — it was learning from a mix of old/new strategy trades
     # and writing bad thresholds (tune_nq_long_dev=0.14 contributed to 7 consecutive
     # NQ long stop-outs). Re-enable only after we have 30+ clean trades per direction

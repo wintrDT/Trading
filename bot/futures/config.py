@@ -41,10 +41,27 @@ RISK_RULES = {
     'stop_ticks': 8,
     'target_ticks': 16,
     'max_contracts': 2,
-    'daily_loss_limit': 999999.0,
+    'daily_loss_limit': 200.0,   # circuit breaker — stop trading for the day at -$200
     'news_blackout_minutes': 5,
     'trade_timeout_minutes': 30,
     'cooldown_minutes': 1,
+}
+
+# TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does
+# so we never get an account terminated for a rule violation we could have
+# avoided. Values here are conservative — well below actual plan limits.
+#
+# TopStep Combine plans (as of 2026):
+#   $50k  Combine: max  5 contracts, daily loss $1,000, trailing DD $2,000
+#   $100k Combine: max 10 contracts, daily loss $2,000, trailing DD $3,000
+#   $150k Combine: max 15 contracts, daily loss $3,000, trailing DD $4,500
+TOPSTEP_RULES = {
+    'plan':              '50k',     # active plan — '50k' / '100k' / '150k'
+    'max_contracts':     2,         # hard cap (start small, well under plan's 5)
+    'daily_loss_limit':  200.0,     # mirrors RISK_RULES for parity
+    'trailing_drawdown': 1800.0,    # $200 below the $50k plan's $2k actual limit
+    'eod_flat_hour_et':  16,        # close all positions at 4:00 PM ET (TopStep cutoff is 4:10 PM ET / 3:10 PM CT)
+    'eod_flat_minute':   0,
 }
 
 TUNE_BOUNDS = {
