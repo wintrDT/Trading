@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from bot.futures.config import TICK_INFO, RISK_RULES, SYMBOL_RISK, TOPSTEP_RULES
 from bot.futures.risk import calc_stop_price, calc_target_price, calc_pnl
 from bot.futures.db import insert_trade, update_trade_closed, mark_signal_traded, get_open_trades, get_last_close_info
+from bot.futures import notifier
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ def place_entry(client, db_path, signal, contracts, sim=False):
              f'{atr:.3f}' if atr else 'n/a',
              target_price,
              ' [SIM]' if sim else '')
+    notifier.notify_entry(symbol, direction, price, stop_price, target_price, contracts, signal['strategy'])
     return trade_id
 
 
@@ -130,3 +132,5 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
     )
     log.info('Closed: %s %s reason=%s price=%.2f pnl=%.2f',
              trade['direction'], trade['symbol'], reason, current_price, pnl)
+    notifier.notify_exit(trade['symbol'], trade['direction'], pnl, reason,
+                         float(trade['entry_price']), float(current_price))

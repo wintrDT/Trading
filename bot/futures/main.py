@@ -27,6 +27,7 @@ from bot.futures.db import get_market_bias
 from bot.futures.trader import place_entry
 from bot.futures.manager import manage_futures_positions
 from bot.futures.tuner import run_tuner
+from bot.futures import notifier
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ _sma_states:     dict = {}
 _rsi_states:     dict = {}
 _vol_states:     dict = {}
 _peak_dev:       dict = {}   # symbol -> {'side': 'long'|'short', 'peak': dev_pct} — reversion confirmation
+_daily_loss_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate daily-loss Telegram pings
 
 
 def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.25):
@@ -181,6 +183,10 @@ def job_scan(client):
     daily_pnl = get_daily_pnl(FUTURES_DB_PATH, today)
     if is_daily_loss_limit_hit(daily_pnl, RISK_RULES['daily_loss_limit']):
         log.warning('Daily loss limit hit ($%.2f) — skipping scan', daily_pnl)
+        global _daily_loss_notified_date
+        if _daily_loss_notified_date != today:
+            notifier.notify_system(f'Daily loss limit hit (${daily_pnl:.2f}) — trading paused for the day', level='critical')
+            _daily_loss_notified_date = today
         return
 
     if get_setting(FUTURES_DB_PATH, 'trading_paused', 'false') == 'true':
@@ -431,6 +437,7 @@ def job_eod_flat(client):
         if not opens:
             log.info('EOD flat: no open positions, nothing to do')
             return
+        notifier.notify_system(f'EOD flat triggered — closing {len(opens)} open position(s) before TopStep cutoff', level='warning')
         prices = get_yf_prices(SYMBOLS, tradovate_client=client) if client else {}
         sim    = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
         for trade in opens:
@@ -449,6 +456,11 @@ def main():
     init_db(FUTURES_DB_PATH)
     _reset_daily_state()
     _warmup_state()
+
+    # Telegram notifier — pulls token/chat_id from futures_settings (set via Settings page)
+    tg_token   = get_setting(FUTURES_DB_PATH, 'telegram_token',   '')
+    tg_chat_id = get_setting(FUTURES_DB_PATH, 'telegram_chat_id', '')
+    notifier.init(tg_token, tg_chat_id)
 
     tv_username  = get_setting(FUTURES_DB_PATH, 'tv_username',  '')
     tv_password  = get_setting(FUTURES_DB_PATH, 'tv_password',  '')
@@ -532,6 +544,7 @@ def main():
     scheduler.add_job(job_news, 'date', run_date=datetime.now(ET), id='news_startup')
 
     log.info('Futures bot running [%s]. Ctrl+C to stop.', 'SIM' if sim else ('DEMO' if tv_demo else 'LIVE'))
+    notifier.notify_system(f'Bot started — mode: {"SIM" if sim else ("DEMO" if tv_demo else "LIVE")}')
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

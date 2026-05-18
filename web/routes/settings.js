@@ -100,6 +100,8 @@ router.get('/', requireAuth, (req, res) => {
     topstepUsername:    getFuturesSetting('topstep_username',   ''),
     topstepAccountId:   getFuturesSetting('topstep_account_id', ''),
     hasTopstepKey:      !!getFuturesSetting('topstep_api_key', ''),
+    telegramChatId:     getFuturesSetting('telegram_chat_id',  ''),
+    hasTelegramToken:   !!getFuturesSetting('telegram_token', ''),
     saved:              req.query.saved === '1',
     error:              null,
   });
@@ -193,6 +195,33 @@ router.post('/futures-tradovate', requireAuth, (req, res) => {
   if (tv_device_id !== undefined) setFuturesSetting('tv_device_id', tv_device_id.trim() || 'sharp-bot-futures-001');
   setFuturesSetting('tv_demo', tv_demo === 'true' ? 'true' : 'false');
   res.redirect('/settings?saved=1');
+});
+
+// Save Telegram notification credentials
+router.post('/telegram', requireAuth, (req, res) => {
+  const { telegram_token, telegram_chat_id } = req.body;
+  if (telegram_token)               setFuturesSetting('telegram_token',   telegram_token.trim());
+  if (telegram_chat_id !== undefined) setFuturesSetting('telegram_chat_id', telegram_chat_id.trim());
+  res.redirect('/settings?saved=1');
+});
+
+// Send a test Telegram message — verifies token + chat_id are correct
+router.post('/telegram/test', requireAuth, async (req, res) => {
+  const axios = require('axios');
+  const token   = getFuturesSetting('telegram_token',   '');
+  const chatId  = getFuturesSetting('telegram_chat_id', '');
+  if (!token || !chatId) return res.json({ ok: false, error: 'Token or chat_id not set — save them first.' });
+  try {
+    const r = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+      chat_id: chatId,
+      text: '🧪 *TEST:* Sharp Bot Telegram notifier is connected.',
+      parse_mode: 'Markdown',
+    }, { timeout: 8000 });
+    res.json({ ok: true, response: r.data });
+  } catch (e) {
+    const msg = e.response?.data?.description || e.message;
+    res.json({ ok: false, error: msg });
+  }
 });
 
 // Save TopstepX credentials — bot uses TopstepX as full broker when these are set
