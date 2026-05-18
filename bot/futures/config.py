@@ -41,7 +41,7 @@ RISK_RULES = {
     'stop_ticks': 8,
     'target_ticks': 16,
     'max_contracts': 2,
-    'daily_loss_limit': 200.0,   # circuit breaker — stop trading for the day at -$200
+    'daily_loss_limit': 2000.0,  # bot stops trading for the day at -$2000
     'news_blackout_minutes': 5,
     'trade_timeout_minutes': 30,
     'cooldown_minutes': 1,
@@ -58,8 +58,8 @@ RISK_RULES = {
 TOPSTEP_RULES = {
     'plan':              '50k',     # active plan — '50k' / '100k' / '150k'
     'max_contracts':     2,         # hard cap (start small, well under plan's 5)
-    'daily_loss_limit':  200.0,     # mirrors RISK_RULES for parity
-    'trailing_drawdown': 1800.0,    # $200 below the $50k plan's $2k actual limit
+    'daily_loss_limit':  2000.0,    # bot stops trading for the day at -$2000
+    'trailing_drawdown': 2000.0,    # TopStep $50k plan max loss (trailing) — match exactly
     'eod_flat_hour_et':  16,        # close all positions at 4:00 PM ET (TopStep cutoff is 4:10 PM ET / 3:10 PM CT)
     'eod_flat_minute':   0,
 }
