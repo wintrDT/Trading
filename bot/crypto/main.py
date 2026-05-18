@@ -178,6 +178,30 @@ def _maybe_breakeven(direction: str, entry: float, current: float, target: float
     return None
 
 
+def _maybe_trailing(direction: str, entry: float, current: float, target: float,
+                    trigger_pct: float = 0.50, trail_pct: float = 0.25) -> float | None:
+    """Once trade reaches trigger_pct of target, trail stop behind current price by trail_pct of target distance.
+
+    trigger_pct=0.50 means trailing arms at 50% of the way to target.
+    trail_pct=0.25 means stop sits 25% of target-distance behind current price.
+    """
+    if direction == 'long':
+        target_dist = target - entry
+        if target_dist <= 0:
+            return None
+        trigger = entry + target_dist * trigger_pct
+        if current >= trigger:
+            return round(current - target_dist * trail_pct, 6)
+    else:
+        target_dist = entry - target
+        if target_dist <= 0:
+            return None
+        trigger = entry - target_dist * trigger_pct
+        if current <= trigger:
+            return round(current + target_dist * trail_pct, 6)
+    return None
+
+
 def job_scan():
     _refresh_trends_if_stale()
 
@@ -308,15 +332,24 @@ def job_manage():
         target    = float(trade['target_price'])
         size      = float(trade['size'])
 
-        # Trail stop to breakeven once 25% of target reached
-        be = _maybe_breakeven(direction, entry, current, target)
-        if be is not None:
-            if (direction == 'long' and be > stop) or (direction == 'short' and be < stop):
-                stop = be
-                update_trade_price(CRYPTO_DB_PATH, trade['id'], current, new_stop=stop)
-                log.info('Trailed stop to BE for %s id=%s', symbol, trade['id'])
-            else:
-                update_trade_price(CRYPTO_DB_PATH, trade['id'], current)
+        # Best stop = highest of original, breakeven, and trailing (for longs; lowest for shorts).
+        # Same pattern as futures manager — trailing wins when in deeper profit, BE wins early.
+        be_stop    = _maybe_breakeven(direction, entry, current, target)
+        trail_stop = _maybe_trailing(direction, entry, current, target)
+
+        new_stop = stop
+        for candidate in [be_stop, trail_stop]:
+            if candidate is None:
+                continue
+            if direction == 'long'  and candidate > new_stop:
+                new_stop = candidate
+            elif direction == 'short' and candidate < new_stop:
+                new_stop = candidate
+
+        if new_stop != stop:
+            stop = new_stop
+            update_trade_price(CRYPTO_DB_PATH, trade['id'], current, new_stop=stop)
+            log.info('Stop trailed to %.6f for %s id=%s', stop, symbol, trade['id'])
         else:
             update_trade_price(CRYPTO_DB_PATH, trade['id'], current)
 
