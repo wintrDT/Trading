@@ -6,32 +6,76 @@ load_dotenv()
 
 FUTURES_DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'futures.db')
 
-SYMBOLS = ['ES', 'NQ', 'RTY']
+SYMBOLS = ['ES', 'NQ']
 
 TICK_INFO = {
-    'ES':  {'tick': 0.25, 'tick_value': 12.50, 'point_value': 50.0},
-    'NQ':  {'tick': 0.25, 'tick_value':  5.00, 'point_value': 20.0},
-    'RTY': {'tick': 0.10, 'tick_value':  5.00, 'point_value': 50.0},
+    'ES': {'tick': 0.25, 'tick_value': 12.50, 'point_value':  50.0},
+    'NQ': {'tick': 0.25, 'tick_value':  5.00, 'point_value':  20.0},
+    'GC': {'tick': 0.10, 'tick_value': 10.00, 'point_value': 100.0},
 }
 
 STRATEGY_PARAMS = {
-    'vwap_deviation_pct': 0.15,
+    'vwap_deviation_pct': 0.15,   # default fallback
     'orb_minutes': 30,
     'orb_min_range_ticks': 8,
+}
+
+# Per-symbol VWAP thresholds — tuned to each instrument's volatility
+SYMBOL_VWAP_PCT = {
+    'ES': 0.05,   # S&P — ~4 pts deviation needed
+    'NQ': 0.05,   # Nasdaq — ~15 pts deviation needed
+    'GC': 0.15,   # Gold — ~7 pts deviation needed
+}
+
+# Per-symbol news keywords — what actually moves each instrument
+SYMBOL_NEWS_KEYWORDS = {
+    'ES':  {'bull': {'jobs', 'hiring', 'gdp', 'growth', 'earnings', 'beat', 'rally', 'strong'},
+            'bear': {'recession', 'layoffs', 'miss', 'weak', 'tariff', 'selloff', 'decline', 'fears'}},
+    'NQ':  {'bull': {'ai', 'tech', 'earnings', 'beat', 'innovation', 'growth', 'upgrade', 'record'},
+            'bear': {'antitrust', 'regulation', 'miss', 'rates', 'selloff', 'downgrade', 'weak'}},
+    'GC':  {'bull': {'inflation', 'war', 'geopolit', 'uncertainty', 'dollar falls', 'fed cuts', 'safe haven'},
+            'bear': {'dollar rises', 'rate hike', 'yields', 'risk on', 'strong economy', 'fed hikes'}},
 }
 
 RISK_RULES = {
     'stop_ticks': 8,
     'target_ticks': 16,
     'max_contracts': 2,
-    'daily_loss_limit': 500.0,
+    'daily_loss_limit': 999999.0,
     'news_blackout_minutes': 5,
+    'trade_timeout_minutes': 30,
+    'cooldown_minutes': 1,
+}
+
+TUNE_BOUNDS = {
+    'long':  {'rsi': {'min': 30, 'max': 65}},
+    'short': {'rsi': {'min': 45, 'max': 70}},
+    'dev':   {'min': 0.05, 'max': 0.25},
+}
+
+# Per-symbol stop/target overrides — GC noise range is $1-2/scan, 8-tick stop ($0.80) is too tight
+SYMBOL_RISK = {
+    # short_target_ticks = $400 profit per contract (ES: 32×$12.50, NQ: 80×$5.00)
+    # counter_trend_target_ticks = $200 (half, since fighting the trend)
+    'ES': {'stop_ticks': 8,  'target_ticks': 16, 'short_stop_ticks': 12, 'short_target_ticks': 32, 'counter_trend_target_ticks': 16},
+    'NQ': {'stop_ticks': 8,  'target_ticks': 16, 'short_stop_ticks': 12, 'short_target_ticks': 80, 'counter_trend_target_ticks': 40},
+    'GC': {'stop_ticks': 20, 'target_ticks': 40, 'short_stop_ticks': 20, 'short_target_ticks': 40, 'counter_trend_target_ticks': 20},
+}
+
+# Per-symbol blocked ET hours — block entries during hours that historically lose money.
+# Derived from 60-day audit: ES 09:00 (pre-ORB chop), 14:00-16:00 (afternoon chop),
+# 22:00-23:00 (overnight sell-off zone). NQ stays consistent so no block.
+BLOCKED_HOURS_ET = {
+    'ES': {9, 14, 15, 16, 22, 23},
+    'NQ': {16},  # mildly bad
 }
 
 TIMEZONE    = 'America/New_York'
-MARKET_OPEN = '09:30'
-MARKET_CLOSE= '16:00'
-ORB_END     = '10:00'
+# Futures close only 5–6 PM ET daily; ORB is the first 30 min of the regular session
+MARKET_CLOSE_HOUR = 17   # 5 PM ET — maintenance window starts
+MARKET_OPEN_HOUR  = 18   # 6 PM ET — new session begins
+ORB_START = '09:30'
+ORB_END   = '09:45'
 
 TV_USERNAME  = os.environ.get('TV_USERNAME', '')
 TV_PASSWORD  = os.environ.get('TV_PASSWORD', '')

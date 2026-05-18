@@ -10,7 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 from bot.futures.config import (
     FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
     TIMEZONE, MARKET_CLOSE_HOUR, MARKET_OPEN_HOUR, ORB_START, ORB_END,
-    AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS,
+    AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS, BLOCKED_HOURS_ET,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_setting, set_setting,
@@ -214,10 +214,17 @@ def job_scan(client):
 
     status_map = {}
 
+    et_hour_now = datetime.now(ET).hour
+
     for symbol in SYMBOLS:
         price = prices.get(symbol)
         if price is None:
             continue
+
+        # Time-of-day block — skip entries during historically losing hours per symbol.
+        # Audit (60-day): ES @ 22:00 ET = 14% WR / -$925; ES @ 14-16 ET = afternoon chop.
+        # State still updates below so indicators stay warm for when good hours resume.
+        hour_blocked = et_hour_now in BLOCKED_HOURS_ET.get(symbol, set())
 
         tick = TICK_INFO[symbol]['tick']
         vwap_state    = _vwap_states.setdefault(symbol, VWAPState())
@@ -308,6 +315,12 @@ def job_scan(client):
                 log.info('%s %s blocked by news bias (%s)', symbol, signal, bias)
                 blocked_by = f'news bias ({bias})'
                 signal, strategy = None, None
+
+        # Time-of-day block — applied last so the signal/blocked_by reflects the real reason
+        if signal and hour_blocked:
+            log.info('%s %s blocked — hour %02d:00 ET historically loses', symbol, signal, et_hour_now)
+            blocked_by = f'hour {et_hour_now:02d}:00 ET (bad-hour block)'
+            signal, strategy = None, None
 
         orb_hi = orb_state.high if orb_state._ready and orb_state.high != float('-inf') else None
         orb_lo = orb_state.low  if orb_state._ready and orb_state.low  != float('inf')  else None
