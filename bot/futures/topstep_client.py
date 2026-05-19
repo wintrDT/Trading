@@ -338,32 +338,38 @@ class TopstepXClient:
             self.connect()
 
     def _resolve_contract(self, search_text: str) -> str | None:
-        """Return the front-month contractId for search_text, or None."""
-        try:
-            with self._lock:
-                resp = self._http.post('/api/Contract/search', json={
-                    'searchText': search_text,
-                    'live': True,
-                })
-                if resp.status_code != 200:
-                    log.warning('Contract/search %s -> HTTP %s: %s', search_text, resp.status_code, resp.text[:300])
-                    return None
-                payload = resp.json()
-                # Response may be {'contracts': [...]} or a raw array
-                contracts = payload.get('contracts', []) if isinstance(payload, dict) else payload
-                if not contracts:
-                    log.warning('Contract/search %s returned empty list. Full response: %s', search_text, payload)
-                    return None
-                # Log what came back so we can see if the search text matches reality
-                names = [f"{c.get('id')}={c.get('name', '?')} active={c.get('activeContract')}" for c in contracts[:5]]
-                log.info('Contract/search %s -> %d results: %s', search_text, len(contracts), names)
-                # Prefer activeContract=True (front-month)
-                active = [c for c in contracts if c.get('activeContract')]
-                pick   = active[0] if active else contracts[0]
-                return str(pick['id']) if pick.get('id') is not None else None
-        except Exception:
-            log.exception('TopstepX contract resolution failed for %s', search_text)
-            return None
+        """Return the front-month contractId for search_text, or None.
+
+        Tries live=True first (funded/live accounts). If that returns empty,
+        retries with live=False (Combine/sim accounts use delayed feed).
+        """
+        for live_flag in (True, False):
+            try:
+                with self._lock:
+                    resp = self._http.post('/api/Contract/search', json={
+                        'searchText': search_text,
+                        'live': live_flag,
+                    })
+                    if resp.status_code != 200:
+                        log.warning('Contract/search %s live=%s -> HTTP %s: %s',
+                                    search_text, live_flag, resp.status_code, resp.text[:300])
+                        continue
+                    payload = resp.json()
+                    contracts = payload.get('contracts', []) if isinstance(payload, dict) else payload
+                    if not contracts:
+                        log.info('Contract/search %s live=%s returned 0 — trying next', search_text, live_flag)
+                        continue
+                    names = [f"{c.get('id')}={c.get('name', '?')} active={c.get('activeContract')}" for c in contracts[:5]]
+                    log.info('Contract/search %s live=%s -> %d results: %s',
+                             search_text, live_flag, len(contracts), names)
+                    active = [c for c in contracts if c.get('activeContract')]
+                    pick   = active[0] if active else contracts[0]
+                    if pick.get('id') is not None:
+                        return str(pick['id'])
+            except Exception:
+                log.exception('TopstepX contract resolution failed for %s (live=%s)', search_text, live_flag)
+                continue
+        return None
 
     # ------------------------------------------------------------------ #
     # Account
@@ -435,7 +441,11 @@ class TopstepXClient:
         return self._fetch_prices_rest(symbols)
 
     def _fetch_prices_rest(self, symbols: list) -> dict:
-        """REST History bar polling. Used as fallback when SignalR isn't streaming."""
+        """REST History bar polling. Used as fallback when SignalR isn't streaming.
+
+        Combine accounts use live=False (delayed/sim feed). Funded accounts use
+        live=True. We try live=False first since the bot is currently on a Combine.
+        """
         self._ensure_token()
         out = {}
         end_time   = datetime.now(timezone.utc)
@@ -444,27 +454,29 @@ class TopstepXClient:
             contract_id = self._contracts.get(symbol)
             if not contract_id:
                 continue
-            try:
-                with self._lock:
-                    resp = self._http.post('/api/History/retrieveBars', json={
-                        'contractId':        contract_id,
-                        'live':              True,
-                        'startTime':         start_time.isoformat().replace('+00:00', 'Z'),
-                        'endTime':           end_time.isoformat().replace('+00:00', 'Z'),
-                        'unit':              2,     # 2 = Minute
-                        'unitNumber':        1,
-                        'limit':             5,
-                        'includePartialBar': True,
-                    })
-                    if resp.status_code != 200:
-                        log.warning('History/retrieveBars %s -> HTTP %s', symbol, resp.status_code)
-                        continue
-                    payload = resp.json()
-                    bars = payload.get('bars', []) if isinstance(payload, dict) else payload
-                    if bars:
-                        out[symbol] = float(bars[-1]['close'])
-            except Exception:
-                log.exception('TopstepX REST price fetch failed for %s', symbol)
+            for live_flag in (False, True):
+                try:
+                    with self._lock:
+                        resp = self._http.post('/api/History/retrieveBars', json={
+                            'contractId':        contract_id,
+                            'live':              live_flag,
+                            'startTime':         start_time.isoformat().replace('+00:00', 'Z'),
+                            'endTime':           end_time.isoformat().replace('+00:00', 'Z'),
+                            'unit':              2,
+                            'unitNumber':        1,
+                            'limit':             5,
+                            'includePartialBar': True,
+                        })
+                        if resp.status_code != 200:
+                            continue
+                        payload = resp.json()
+                        bars = payload.get('bars', []) if isinstance(payload, dict) else payload
+                        if bars:
+                            out[symbol] = float(bars[-1]['close'])
+                            break  # got data, stop trying other live_flag
+                except Exception:
+                    log.exception('TopstepX REST price fetch failed for %s (live=%s)', symbol, live_flag)
+                    continue
         return out
 
     # ------------------------------------------------------------------ #
