@@ -445,6 +445,24 @@
               <span style="color:var(--text2);">RSI <span style="color:<%= s.rsi != null && s.rsi > 70 ? '#f5a623' : s.rsi != null && s.rsi < 30 ? '#f5a623' : 'var(--text)' %>;font-weight:600;"><%= s.rsi != null ? s.rsi.toFixed(0) : '—' %></span></span>
               <span style="color:var(--text2);">Trend <span style="color:<%= trendColor %>;font-weight:600;"><%= trendArrow %> <%= s.trend || '—' %></span></span>
             </div>
+            <% if (s.day_type) {
+                 const dtMap = {
+                   trend_day_up:     {emoji:'⬆️',  label:'Trend Day Up',     color:'#00d4a0'},
+                   trend_day_down:   {emoji:'⬇️',  label:'Trend Day Down',   color:'#ff4f4f'},
+                   gap_and_go_up:    {emoji:'🚀', label:'Gap-and-Go Up',    color:'#00d4a0'},
+                   gap_and_go_down:  {emoji:'🔻', label:'Gap-and-Go Down',  color:'#ff4f4f'},
+                   auction_reversal: {emoji:'↩️',  label:'Auction Reversal', color:'#f5a623'},
+                   news_expansion:   {emoji:'⚡', label:'News Expansion',   color:'#f5a623'},
+                   low_vol_chop:     {emoji:'💤', label:'Low-Vol Chop',     color:'#888'},
+                   balance_day:      {emoji:'🌀', label:'Balance Day',      color:'#64b4ff'},
+                 };
+                 const dt = dtMap[s.day_type] || {emoji:'•', label: s.day_type, color:'var(--text2)'};
+            %>
+            <div style="margin-top:0.4rem;font-size:0.72rem;color:var(--text2);">
+              Day type:
+              <span style="color:<%= dt.color %>;font-weight:600;"><%= dt.emoji %> <%= dt.label %></span>
+            </div>
+            <% } %>
             <!-- Signal state -->
             <div style="margin-top:0.5rem;font-size:0.74rem;">
               <% if (s.signal) { %>

@@ -21,7 +21,11 @@ from bot.futures.news import fetch_and_store_news
 from bot.futures.tradovate_client import TradovateClient
 from bot.futures.price_feed import get_prices as get_yf_prices, get_price_history
 from bot.tt_client import TastytradeClient as _TastyClient
-from bot.futures.strategy import VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState, calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter
+from bot.futures.strategy import (
+    VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState,
+    calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter,
+    classify_day_type, day_type_blocks_direction,
+)
 from bot.futures.risk import is_daily_loss_limit_hit
 from bot.futures.db import get_market_bias
 from bot.futures.trader import place_entry
@@ -41,6 +45,8 @@ _sma_states:     dict = {}
 _rsi_states:     dict = {}
 _vol_states:     dict = {}
 _peak_dev:       dict = {}   # symbol -> {'side': 'long'|'short', 'peak': dev_pct} — reversion confirmation
+_day_type_cache: dict = {}   # symbol -> classified day type, cleared on daily reset
+_last_price:     dict = {}   # symbol -> last scanned price (used for EOD session-close snapshot)
 _daily_loss_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate daily-loss Telegram pings
 
 
@@ -135,7 +141,7 @@ def _now_minute():
 
 
 def _reset_daily_state():
-    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev
+    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache
     _vwap_states    = {s: VWAPState()        for s in SYMBOLS}
     _orb_states     = {s: ORBState()         for s in SYMBOLS}
     _channel_states = {s: ChannelState()     for s in SYMBOLS}
@@ -143,7 +149,19 @@ def _reset_daily_state():
     _rsi_states     = {s: RSIState()         for s in SYMBOLS}
     _vol_states     = {s: VolatilityState()  for s in SYMBOLS}
     _peak_dev       = {}
-    log.info('Daily state reset — VWAP, ORB, channel, SMA, RSI, volatility, and pending entries cleared')
+    _day_type_cache = {}
+    log.info('Daily state reset — VWAP, ORB, channel, SMA, RSI, volatility, day-type, and pending entries cleared')
+
+
+def _record_session_close():
+    """Snapshot the last seen price for each symbol — used as 'prev_close' input
+    to next session's day-type classifier. Runs at 16:58 ET (just before TopStep
+    cutoff and the 17:00 maintenance close)."""
+    for symbol in SYMBOLS:
+        price = _last_price.get(symbol)
+        if price:
+            set_setting(FUTURES_DB_PATH, f'prev_close_{symbol}', str(price))
+            log.info('Recorded session close for %s: %.2f', symbol, price)
 
 
 def _warmup_state():
@@ -245,7 +263,9 @@ def job_scan(client):
         sma_state.update(price)
         rsi_state.update(price)
         vol_state.update(price)
+        vol_state.update_baseline(price)
         vwap_state.add_bar(price=price, volume=1)
+        _last_price[symbol] = price
 
         if not orb_state._ready and now_min >= orb_end_min:
             orb_state.set_ready()
@@ -271,6 +291,33 @@ def job_scan(client):
         # Adaptive threshold: use rolling volatility when available, else config default
         dynamic_threshold = vol_state.threshold() or vwap_pct
 
+        # Day-type classification — computed once per session after 10:00 ET, then cached.
+        # Cleared on 6 PM ET daily reset.
+        if et_hour_now >= 10 and symbol not in _day_type_cache:
+            tick = TICK_INFO[symbol]['tick']
+            prev_close_str = get_setting(FUTURES_DB_PATH, f'prev_close_{symbol}', '')
+            prev_close = float(prev_close_str) if prev_close_str else None
+            day_type = classify_day_type(
+                prev_close=prev_close,
+                orb_state=orb_state,
+                vwap=vwap,
+                current_price=price,
+                sma=sma,
+                atr=vol_state.atr(),
+                atr_baseline=vol_state.atr_baseline(),
+                tick=tick,
+            )
+            _day_type_cache[symbol] = day_type
+            set_setting(FUTURES_DB_PATH, f'day_type_{symbol}', day_type)
+            log.info('%s day type: %s  (gap_close=%s orb=%.2f-%.2f atr=%.2f baseline=%s)',
+                     symbol, day_type, prev_close, orb_state.low, orb_state.high,
+                     vol_state.atr() or 0,
+                     f'{vol_state.atr_baseline():.2f}' if vol_state.atr_baseline() else 'n/a')
+            try:
+                notifier.notify_system(f'{symbol} day type: {day_type}', level='info')
+            except Exception:
+                pass
+
         # Read tuned thresholds — fall back to dynamic/config until tuner has enough data
         sym_l = symbol.lower()
         tuned_rsi_long  = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_long_rsi',  40))
@@ -285,6 +332,13 @@ def job_scan(client):
             pending = _peak_dev.get(symbol)
             if direction is None and pending:
                 blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
+
+            # Day-type filter — block reversion entries on trend/gap days
+            dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
+            if direction and dt_block:
+                log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
+                blocked_by = dt_block
+                direction = None
 
             # Hard trend filter — NO counter-trend reversions, even at extreme deviation.
             # Audit showed 7 consecutive NQ long stop-outs (-$440) when extreme override
@@ -339,6 +393,7 @@ def job_scan(client):
             'sma':       round(sma, 2) if sma else None,
             'rsi':       round(rsi, 1) if rsi else None,
             'trend':     trend,
+            'day_type':  _day_type_cache.get(symbol),
             'signal':    signal,
             'blocked_by': blocked_by,
             'session':   'active',
@@ -359,6 +414,14 @@ def job_scan(client):
             'traded': 0,
         })
         contracts = 2 if dev_pct is not None and abs(dev_pct) >= 2 * dynamic_threshold else 1
+        # Day-type sizing adjustment: news_expansion halves, low_vol_chop floors to 1
+        _dt = _day_type_cache.get(symbol)
+        if _dt == 'news_expansion':
+            contracts = max(1, contracts // 2)
+            log.info('news_expansion regime — halving size to %d for %s', contracts, symbol)
+        elif _dt == 'low_vol_chop':
+            contracts = 1
+            log.info('low_vol_chop regime — flooring size to 1 for %s', contracts)
         log.info('Signal: %s %s %s @ %.2f contracts=%d', strategy, signal, symbol, price, contracts)
         place_entry(client, FUTURES_DB_PATH, {
             'symbol': symbol, 'strategy': strategy,
@@ -532,6 +595,8 @@ def main():
         CronTrigger(hour=TOPSTEP_RULES['eod_flat_hour_et'], minute=TOPSTEP_RULES['eod_flat_minute'], timezone=ET),
         id='eod_flat',
     )
+    # Record session-close price for next session's day-type classifier (gap detection)
+    scheduler.add_job(_record_session_close, CronTrigger(hour=16, minute=58, timezone=ET), id='session_close')
     # Auto-tuner DISABLED — it was learning from a mix of old/new strategy trades
     # and writing bad thresholds (tune_nq_long_dev=0.14 contributed to 7 consecutive
     # NQ long stop-outs). Re-enable only after we have 30+ clean trades per direction
