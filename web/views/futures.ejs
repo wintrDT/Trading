@@ -466,14 +466,19 @@
             <% if (s.confidence != null) {
                  const conf = s.confidence;
                  const cColor = conf >= 75 ? '#00d4a0' : conf >= 60 ? '#64b4ff' : conf >= 40 ? '#f5a623' : '#ff4f4f';
+                 const cBg    = conf >= 75 ? 'rgba(0,212,160,0.10)' : conf >= 60 ? 'rgba(100,180,255,0.10)' : conf >= 40 ? 'rgba(245,166,35,0.10)' : 'rgba(255,79,79,0.10)';
+                 const cBorder= conf >= 75 ? 'rgba(0,212,160,0.30)' : conf >= 60 ? 'rgba(100,180,255,0.30)' : conf >= 40 ? 'rgba(245,166,35,0.30)' : 'rgba(255,79,79,0.30)';
             %>
-            <div style="margin-top:0.4rem;font-size:0.72rem;color:var(--text2);" title="<%= s.conf_break ? JSON.stringify(s.conf_break) : '' %>">
-              Confidence:
-              <span style="color:<%= cColor %>;font-weight:700;font-family:'Space Mono',monospace;"><%= conf %>/100</span>
+            <div style="margin-top:0.6rem;padding:0.55rem 0.75rem;background:<%= cBg %>;border:1px solid <%= cBorder %>;border-radius:8px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.72rem;color:var(--text2);">
+                <span>Confidence<%= s.conf_dir ? ' (' + s.conf_dir + ')' : '' %></span>
+                <span style="color:<%= cColor %>;font-weight:700;font-family:'Space Mono',monospace;font-size:0.95rem;letter-spacing:-0.02em;"><%= conf %>/100</span>
+              </div>
               <% if (s.conf_break) { %>
-                <span style="color:var(--text2);font-size:0.65rem;margin-left:6px;">
-                  (dev <%= s.conf_break.dev %> · trend <%= s.conf_break.trend %> · day <%= s.conf_break.day_type %> · rsi <%= s.conf_break.rsi %> · atr <%= s.conf_break.atr %> · news <%= s.conf_break.news %>)
-                </span>
+              <div style="margin-top:5px;font-size:0.62rem;color:var(--text2);font-family:'Space Mono',monospace;line-height:1.4;">
+                dev <%= s.conf_break.dev %>/25 · trend <%= s.conf_break.trend %>/20 · day <%= s.conf_break.day_type %>/20<br>
+                rsi <%= s.conf_break.rsi %>/15 · atr <%= s.conf_break.atr %>/10 · news <%= s.conf_break.news %>/10
+              </div>
               <% } %>
             </div>
             <% } %>

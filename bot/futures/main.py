@@ -399,26 +399,42 @@ def job_scan(client):
         if signal:
             news_bias_for_symbol = get_market_bias(FUTURES_DB_PATH, symbol)
 
-        # Confidence score 0-100 — composite signal quality gate. Below threshold = skip.
+        # Confidence score 0-100 — ALWAYS compute it for the suggested direction so
+        # the dashboard can show what the bot would score, even when armed/blocked.
+        # Direction priority: actual signal -> pending peak side -> dev_pct sign
         confidence_score = None
         confidence_breakdown = None
-        if signal:
+        scored_direction = signal
+        if not scored_direction:
+            pending = _peak_dev.get(symbol)
+            if pending:
+                scored_direction = pending.get('side')
+            elif dev_pct is not None:
+                if dev_pct <= -tuned_dev_long:
+                    scored_direction = 'long'
+                elif dev_pct >= tuned_dev_short:
+                    scored_direction = 'short'
+
+        if scored_direction and dev_pct is not None:
             atr_now      = vol_state.atr()
             atr_baseline = vol_state.atr_baseline()
             atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
             confidence_score, confidence_breakdown = compute_confidence(
-                direction=signal,
+                direction=scored_direction,
                 dev_pct=dev_pct,
-                dev_threshold=tuned_dev_long if signal == 'long' else tuned_dev_short,
+                dev_threshold=tuned_dev_long if scored_direction == 'long' else tuned_dev_short,
                 sma_trend=trend,
                 day_type=_day_type_cache.get(symbol),
                 rsi=rsi,
                 atr_ratio=atr_ratio,
                 near_event=news_state['state'] == 'near_event',
-                bias_disagrees=bool(news_bias_for_symbol and news_bias_for_symbol != signal),
+                bias_disagrees=bool(news_bias_for_symbol and news_bias_for_symbol != scored_direction),
             )
+
+        # Hard gate: only block actual firing signals if below threshold
+        if signal:
             min_conf = RISK_RULES.get('min_confidence', 60)
-            if confidence_score < min_conf:
+            if confidence_score is not None and confidence_score < min_conf:
                 log.info('%s %s blocked by confidence %d < %d (%s)', symbol, signal,
                          confidence_score, min_conf, confidence_breakdown)
                 blocked_by = f'confidence {confidence_score}/100 < {min_conf}'
@@ -445,6 +461,7 @@ def job_scan(client):
             'blocked_by': blocked_by,
             'confidence': confidence_score,
             'conf_break': confidence_breakdown,
+            'conf_dir':   scored_direction,   # which direction confidence is scored for
             'news_state': news_state['state'],
             'session':    'active',
             'orb_high':   round(orb_hi, 2) if orb_hi else None,
