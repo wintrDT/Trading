@@ -107,7 +107,14 @@ router.get('/', requireAuth, (req, res) => {
     }
   }
 
-  const netLiq = botOnline ? parseFloat((500 + allTimePnl).toFixed(2)) : null;
+  // Prefer the latest broker-reported balance from the snapshot job (TopStep when
+  // connected, otherwise sim-derived). Fall back to the legacy 500+all-time-P&L
+  // calculation if no snapshot exists yet.
+  const snapBalance = accountSnap?.net_liq != null ? parseFloat(accountSnap.net_liq) : null;
+  const netLiq = !botOnline ? null
+    : (snapBalance != null && snapBalance !== 500)
+      ? snapBalance
+      : parseFloat((500 + allTimePnl).toFixed(2));
 
   res.render('futures', {
     user: req.session.user,
