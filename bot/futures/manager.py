@@ -71,9 +71,24 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
 
         if reason is None:
             try:
-                entry_dt = datetime.fromisoformat(trade['entry_ts'].replace('Z', '+00:00'))
-                age_min  = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
-                if age_min >= RISK_RULES['trade_timeout_minutes']:
+                entry_dt    = datetime.fromisoformat(trade['entry_ts'].replace('Z', '+00:00'))
+                age_seconds = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                age_min     = age_seconds / 60
+
+                # Fast-fail: if trade hasn't shown positive MFE within the grace period
+                # and is currently meaningfully underwater, exit early instead of grinding
+                # to the full stop. Cuts the bleed from "instant losers" (trades that
+                # never go green) — yesterday's audit showed ~19% of trades fit this.
+                fast_fail_age = RISK_RULES.get('fast_fail_min_age_sec', 0)
+                fast_fail_neg = RISK_RULES.get('fast_fail_max_neg_usd', 0)
+                if (fast_fail_age
+                        and age_seconds >= fast_fail_age
+                        and (new_fav or 0) <= 0
+                        and unrealized < fast_fail_neg):
+                    reason = 'fast_fail'
+                    log.info('Fast-fail closing %s %s id=%s — age=%.0fs MFE=$%.0f unrealized=$%.0f',
+                             symbol, direction, trade['id'], age_seconds, new_fav or 0, unrealized)
+                elif age_min >= RISK_RULES['trade_timeout_minutes']:
                     reason = 'timeout'
             except Exception:
                 pass

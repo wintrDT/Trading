@@ -45,6 +45,12 @@ RISK_RULES = {
     'news_blackout_minutes': 5,
     'trade_timeout_minutes': 30,
     'cooldown_minutes': 1,
+    # Fast-fail filter: if a trade is older than X seconds AND has NEVER shown
+    # positive MFE AND is currently >$Y underwater, close it early. Yesterday's
+    # data showed winners have avg MAE -$9 while losers have avg MAE -$262.
+    # Trades that don't go green within ~2 min are structurally lost causes.
+    'fast_fail_min_age_sec': 120,
+    'fast_fail_max_neg_usd': -50.0,
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does
@@ -84,7 +90,7 @@ SYMBOL_RISK = {
 # were partly trail-bug victims, not bad-hour victims). Only 22-23 ET kept blocked —
 # at 22:00 the bot was direction-wrong 6/7 times (14% WR), which is regime, not trail.
 BLOCKED_HOURS_ET = {
-    'ES': {22, 23},
+    'ES': {13, 22, 23},  # 13 added — lunch chop (-$445 yesterday, 38% WR)
     'NQ': set(),
 }
 
