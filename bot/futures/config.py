@@ -52,10 +52,14 @@ RISK_RULES = {
     # Trades that don't go green within ~2 min are structurally lost causes.
     'fast_fail_min_age_sec': 120,
     'fast_fail_max_neg_usd': -50.0,
-    # Minimum confidence score 0-100 required to enter a trade. compute_confidence()
-    # in strategy.py blends VWAP / trend / day_type / RSI / ATR regime / news calm.
-    # 60 = filter the bottom third of setups, still firing reasonable volume for testing.
+    # Minimum confidence score 0-100 required to enter a trade.
     'min_confidence': 60,
+    # Override threshold — when confidence >= this value, single-indicator filters
+    # (SMA trend, day-type direction, micro-momentum) are bypassed. The setup is
+    # strong enough on the composite score that the individual gates would be
+    # over-filtering. Safety rails (news pause, hour block, cooldown, daily loss
+    # limit, max contracts) still apply regardless.
+    'confidence_override': 70,
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does

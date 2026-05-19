@@ -348,37 +348,60 @@ def job_scan(client):
             if direction is None and pending:
                 blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
 
-            # Day-type filter — block reversion entries on trend/gap days
-            dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
-            if direction and dt_block:
-                log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
-                blocked_by = dt_block
-                direction = None
+            # Compute confidence FIRST so high-conviction setups can bypass
+            # the single-indicator filters below.
+            preview_confidence = None
+            if direction and dev_pct is not None:
+                atr_now      = vol_state.atr()
+                atr_baseline = vol_state.atr_baseline()
+                atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
+                _bias = get_market_bias(FUTURES_DB_PATH, symbol)
+                preview_confidence, _ = compute_confidence(
+                    direction=direction,
+                    dev_pct=dev_pct,
+                    dev_threshold=tuned_dev_long if direction == 'long' else tuned_dev_short,
+                    sma_trend=trend,
+                    day_type=_day_type_cache.get(symbol),
+                    rsi=rsi,
+                    atr_ratio=atr_ratio,
+                    near_event=news_state['state'] == 'near_event',
+                    bias_disagrees=bool(_bias and _bias != direction),
+                )
 
-            # Micro-momentum filter — catches the case where 20-bar SMA still says
-            # "up" but price has been falling for the last few bars (today's pattern).
-            # Faster reaction than the SMA-based trend filter below.
-            if direction:
-                mm_block = micro_momentum_blocks(channel_state, direction)
-                if mm_block:
-                    log.info('%s %s blocked: %s', symbol, direction, mm_block)
-                    blocked_by = mm_block
+            override_threshold = RISK_RULES.get('confidence_override', 70)
+            confidence_override = (preview_confidence is not None
+                                    and preview_confidence >= override_threshold)
+
+            if confidence_override:
+                log.info('%s %s — confidence %d >= %d, BYPASSING indicator filters',
+                         symbol, direction, preview_confidence, override_threshold)
+            else:
+                # Day-type filter — block reversion entries on trend/gap days
+                dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
+                if direction and dt_block:
+                    log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
+                    blocked_by = dt_block
                     direction = None
 
-            # Hard trend filter — NO counter-trend reversions, even at extreme deviation.
-            # Audit showed 7 consecutive NQ long stop-outs (-$440) when extreme override
-            # was letting longs fire into downtrends. The "bounce" before knife continues.
-            if direction == 'long' and trend == 'down':
-                direction = None
-                blocked_by = 'trend=down (no longs)'
-            elif direction == 'short' and trend == 'up':
-                direction = None
-                blocked_by = 'trend=up (no shorts)'
+                # Micro-momentum filter — catches the case where 20-bar SMA still says
+                # "up" but price has been falling for the last few bars.
+                if direction:
+                    mm_block = micro_momentum_blocks(channel_state, direction)
+                    if mm_block:
+                        log.info('%s %s blocked: %s', symbol, direction, mm_block)
+                        blocked_by = mm_block
+                        direction = None
+
+                # Hard trend filter — NO counter-trend reversions in normal regime.
+                if direction == 'long' and trend == 'down':
+                    direction = None
+                    blocked_by = 'trend=down (no longs)'
+                elif direction == 'short' and trend == 'up':
+                    direction = None
+                    blocked_by = 'trend=up (no shorts)'
 
             if direction:
                 # RSI is now an INPUT to the confidence score, not a hard gate.
-                # Per user direction — let the confidence score do final filtering
-                # instead of single-indicator hard blocks.
                 signal, strategy = direction, 'vwap'
 
         orb_dir = check_orb_signal(price, orb_state, orb_end_min,
