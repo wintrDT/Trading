@@ -47,7 +47,8 @@ _vol_states:     dict = {}
 _peak_dev:       dict = {}   # symbol -> {'side': 'long'|'short', 'peak': dev_pct} — reversion confirmation
 _day_type_cache: dict = {}   # symbol -> classified day type, cleared on daily reset
 _last_price:     dict = {}   # symbol -> last scanned price (used for EOD session-close snapshot)
-_daily_loss_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate daily-loss Telegram pings
+_daily_loss_notified_date:   str = ''  # 'YYYY-MM-DD' — prevents duplicate daily-loss Telegram pings
+_daily_profit_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate profit-target Telegram pings
 
 
 def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.25):
@@ -205,6 +206,16 @@ def job_scan(client):
         if _daily_loss_notified_date != today:
             notifier.notify_system(f'Daily loss limit hit (${daily_pnl:.2f}) — trading paused for the day', level='critical')
             _daily_loss_notified_date = today
+        return
+
+    # Daily profit target — lock in the day's gain, don't give it back
+    profit_target = RISK_RULES.get('daily_profit_target', 0)
+    if profit_target and daily_pnl >= profit_target:
+        log.info('Daily profit target hit ($%.2f >= $%.2f) — banking the day', daily_pnl, profit_target)
+        global _daily_profit_notified_date
+        if _daily_profit_notified_date != today:
+            notifier.notify_system(f'Daily profit target hit (+${daily_pnl:.2f}) — trading paused, day banked', level='info')
+            _daily_profit_notified_date = today
         return
 
     if get_setting(FUTURES_DB_PATH, 'trading_paused', 'false') == 'true':

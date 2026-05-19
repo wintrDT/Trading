@@ -41,7 +41,8 @@ RISK_RULES = {
     'stop_ticks': 8,
     'target_ticks': 16,
     'max_contracts': 2,
-    'daily_loss_limit': 2000.0,  # bot stops trading for the day at -$2000
+    'daily_loss_limit': 2000.0,    # bot stops trading for the day at -$2000
+    'daily_profit_target': 3000.0,  # TopStep $50k Combine profit target — bot stops trading at +$3000 (Combine pass)
     'news_blackout_minutes': 5,
     'trade_timeout_minutes': 30,
     'cooldown_minutes': 1,
