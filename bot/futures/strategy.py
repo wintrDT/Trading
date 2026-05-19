@@ -298,12 +298,18 @@ def compute_confidence(
     breakdown = {}
 
     # 1. VWAP deviation strength (0-32): more extreme = stronger signal.
-    # Boosted from 0-25 after reducing RSI weight — the deviation magnitude is
-    # the strongest single quality signal in a reversion strategy.
+    # DIRECTION-AWARE: a "short" only earns dev points when price is above VWAP
+    # (positive dev_pct). Below VWAP gives 0 because shorting a dip isn't a
+    # reversion setup. Same logic in reverse for long.
     if dev_pct is not None and dev_threshold > 0:
-        ratio = abs(dev_pct) / dev_threshold
-        # 1x threshold = 13 pts, 2x = 26 pts, 2.5x+ = 32 pts (cap)
-        dev_score = min(32, int(ratio * 13))
+        aligned = ((direction == 'long'  and dev_pct < 0) or
+                   (direction == 'short' and dev_pct > 0))
+        if aligned:
+            ratio = abs(dev_pct) / dev_threshold
+            # 1x threshold = 13 pts, 2x = 26 pts, 2.5x+ = 32 pts (cap)
+            dev_score = min(32, int(ratio * 13))
+        else:
+            dev_score = 0
     else:
         dev_score = 0
     breakdown['dev'] = dev_score

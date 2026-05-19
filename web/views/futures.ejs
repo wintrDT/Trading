@@ -463,23 +463,41 @@
               <span style="color:<%= dt.color %>;font-weight:600;"><%= dt.emoji %> <%= dt.label %></span>
             </div>
             <% } %>
-            <% if (s.confidence != null) {
-                 const conf = s.confidence;
-                 const cColor = conf >= 75 ? '#00d4a0' : conf >= 60 ? '#64b4ff' : conf >= 40 ? '#f5a623' : '#ff4f4f';
-                 const cBg    = conf >= 75 ? 'rgba(0,212,160,0.10)' : conf >= 60 ? 'rgba(100,180,255,0.10)' : conf >= 40 ? 'rgba(245,166,35,0.10)' : 'rgba(255,79,79,0.10)';
-                 const cBorder= conf >= 75 ? 'rgba(0,212,160,0.30)' : conf >= 60 ? 'rgba(100,180,255,0.30)' : conf >= 40 ? 'rgba(245,166,35,0.30)' : 'rgba(255,79,79,0.30)';
+            <% if (s.confidence_long != null || s.confidence_short != null) {
+                 function confColor(c) {
+                   return c >= 75 ? '#00d4a0' : c >= 60 ? '#64b4ff' : c >= 40 ? '#f5a623' : '#ff4f4f';
+                 }
+                 const cl = s.confidence_long;
+                 const cs = s.confidence_short;
+                 const activeDir = s.conf_dir;
+                 const longActive  = activeDir === 'long';
+                 const shortActive = activeDir === 'short';
             %>
-            <div style="margin-top:0.6rem;padding:0.55rem 0.75rem;background:<%= cBg %>;border:1px solid <%= cBorder %>;border-radius:8px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.72rem;color:var(--text2);">
-                <span>Confidence<%= s.conf_dir ? ' (' + s.conf_dir + ')' : '' %></span>
-                <span style="color:<%= cColor %>;font-weight:700;font-family:'Space Mono',monospace;font-size:0.95rem;letter-spacing:-0.02em;"><%= conf %>/100</span>
+            <div style="margin-top:0.6rem;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+              <!-- LONG -->
+              <div style="padding:0.5rem 0.65rem;background:<%= longActive ? 'rgba(0,212,160,0.12)' : 'rgba(255,255,255,0.025)' %>;border:1px solid <%= longActive ? 'rgba(0,212,160,0.45)' : 'rgba(255,255,255,0.08)' %>;border-radius:8px;<%= longActive ? 'box-shadow:0 0 12px rgba(0,212,160,0.18);' : '' %>">
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.68rem;color:var(--text2);">
+                  <span style="text-transform:uppercase;letter-spacing:0.06em;font-weight:600;<%= longActive ? 'color:#00d4a0;' : '' %>">Long<%= longActive ? ' ●' : '' %></span>
+                  <span style="color:<%= cl != null ? confColor(cl) : 'var(--text2)' %>;font-weight:700;font-family:'Space Mono',monospace;font-size:0.92rem;letter-spacing:-0.02em;"><%= cl != null ? cl : '—' %>/100</span>
+                </div>
+                <% if (s.conf_break_long) { %>
+                <div style="margin-top:4px;font-size:0.58rem;color:var(--text2);font-family:'Space Mono',monospace;line-height:1.4;">
+                  d<%= s.conf_break_long.dev %> t<%= s.conf_break_long.trend %> day<%= s.conf_break_long.day_type %> r<%= s.conf_break_long.rsi %> a<%= s.conf_break_long.atr %> n<%= s.conf_break_long.news %>
+                </div>
+                <% } %>
               </div>
-              <% if (s.conf_break) { %>
-              <div style="margin-top:5px;font-size:0.62rem;color:var(--text2);font-family:'Space Mono',monospace;line-height:1.4;">
-                dev <%= s.conf_break.dev %>/32 · trend <%= s.conf_break.trend %>/20 · day <%= s.conf_break.day_type %>/20<br>
-                rsi <%= s.conf_break.rsi %>/8 · atr <%= s.conf_break.atr %>/10 · news <%= s.conf_break.news %>/10
+              <!-- SHORT -->
+              <div style="padding:0.5rem 0.65rem;background:<%= shortActive ? 'rgba(255,79,79,0.12)' : 'rgba(255,255,255,0.025)' %>;border:1px solid <%= shortActive ? 'rgba(255,79,79,0.45)' : 'rgba(255,255,255,0.08)' %>;border-radius:8px;<%= shortActive ? 'box-shadow:0 0 12px rgba(255,79,79,0.18);' : '' %>">
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.68rem;color:var(--text2);">
+                  <span style="text-transform:uppercase;letter-spacing:0.06em;font-weight:600;<%= shortActive ? 'color:#ff4f4f;' : '' %>">Short<%= shortActive ? ' ●' : '' %></span>
+                  <span style="color:<%= cs != null ? confColor(cs) : 'var(--text2)' %>;font-weight:700;font-family:'Space Mono',monospace;font-size:0.92rem;letter-spacing:-0.02em;"><%= cs != null ? cs : '—' %>/100</span>
+                </div>
+                <% if (s.conf_break_short) { %>
+                <div style="margin-top:4px;font-size:0.58rem;color:var(--text2);font-family:'Space Mono',monospace;line-height:1.4;">
+                  d<%= s.conf_break_short.dev %> t<%= s.conf_break_short.trend %> day<%= s.conf_break_short.day_type %> r<%= s.conf_break_short.rsi %> a<%= s.conf_break_short.atr %> n<%= s.conf_break_short.news %>
+                </div>
+                <% } %>
               </div>
-              <% } %>
             </div>
             <% } %>
             <% if (s.news_state && s.news_state !== 'normal') { %>

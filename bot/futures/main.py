@@ -417,11 +417,32 @@ def job_scan(client):
         if signal:
             news_bias_for_symbol = get_market_bias(FUTURES_DB_PATH, symbol)
 
-        # Confidence score 0-100 — ALWAYS compute it for the suggested direction so
-        # the dashboard can show what the bot would score, even when armed/blocked.
-        # Direction priority: actual signal -> pending peak side -> dev_pct sign
-        confidence_score = None
-        confidence_breakdown = None
+        # Confidence score 0-100 — compute for BOTH directions so the dashboard
+        # can always show long AND short scores side by side, regardless of which
+        # direction the bot is currently considering.
+        atr_now      = vol_state.atr()
+        atr_baseline = vol_state.atr_baseline()
+        atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
+        bias = news_bias_for_symbol
+
+        confidence_long, breakdown_long = compute_confidence(
+            direction='long',
+            dev_pct=dev_pct, dev_threshold=tuned_dev_long,
+            sma_trend=trend, day_type=_day_type_cache.get(symbol),
+            rsi=rsi, atr_ratio=atr_ratio,
+            near_event=news_state['state'] == 'near_event',
+            bias_disagrees=bool(bias and bias != 'long'),
+        ) if dev_pct is not None else (None, None)
+        confidence_short, breakdown_short = compute_confidence(
+            direction='short',
+            dev_pct=dev_pct, dev_threshold=tuned_dev_short,
+            sma_trend=trend, day_type=_day_type_cache.get(symbol),
+            rsi=rsi, atr_ratio=atr_ratio,
+            near_event=news_state['state'] == 'near_event',
+            bias_disagrees=bool(bias and bias != 'short'),
+        ) if dev_pct is not None else (None, None)
+
+        # "Active" direction (for the hard gate + dashboard highlight)
         scored_direction = signal
         if not scored_direction:
             pending = _peak_dev.get(symbol)
@@ -432,22 +453,12 @@ def job_scan(client):
                     scored_direction = 'long'
                 elif dev_pct >= tuned_dev_short:
                     scored_direction = 'short'
-
-        if scored_direction and dev_pct is not None:
-            atr_now      = vol_state.atr()
-            atr_baseline = vol_state.atr_baseline()
-            atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
-            confidence_score, confidence_breakdown = compute_confidence(
-                direction=scored_direction,
-                dev_pct=dev_pct,
-                dev_threshold=tuned_dev_long if scored_direction == 'long' else tuned_dev_short,
-                sma_trend=trend,
-                day_type=_day_type_cache.get(symbol),
-                rsi=rsi,
-                atr_ratio=atr_ratio,
-                near_event=news_state['state'] == 'near_event',
-                bias_disagrees=bool(news_bias_for_symbol and news_bias_for_symbol != scored_direction),
-            )
+        confidence_score = (confidence_long if scored_direction == 'long'
+                            else confidence_short if scored_direction == 'short'
+                            else None)
+        confidence_breakdown = (breakdown_long if scored_direction == 'long'
+                                else breakdown_short if scored_direction == 'short'
+                                else None)
 
         # Hard gate: only block actual firing signals if below threshold
         if signal:
@@ -477,13 +488,17 @@ def job_scan(client):
             'day_type':   _day_type_cache.get(symbol),
             'signal':     signal,
             'blocked_by': blocked_by,
-            'confidence': confidence_score,
-            'conf_break': confidence_breakdown,
-            'conf_dir':   scored_direction,   # which direction confidence is scored for
-            'news_state': news_state['state'],
-            'session':    'active',
-            'orb_high':   round(orb_hi, 2) if orb_hi else None,
-            'orb_low':    round(orb_lo, 2) if orb_lo else None,
+            'confidence':       confidence_score,           # active direction (for highlight)
+            'conf_break':       confidence_breakdown,
+            'conf_dir':         scored_direction,
+            'confidence_long':  confidence_long,            # always-on side-by-side scores
+            'confidence_short': confidence_short,
+            'conf_break_long':  breakdown_long,
+            'conf_break_short': breakdown_short,
+            'news_state':       news_state['state'],
+            'session':          'active',
+            'orb_high':         round(orb_hi, 2) if orb_hi else None,
+            'orb_low':          round(orb_lo, 2) if orb_lo else None,
         }
 
         # Channel disabled — stale data causes it to buy tops and sell bottoms
