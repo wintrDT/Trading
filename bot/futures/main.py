@@ -25,6 +25,7 @@ from bot.futures.strategy import (
     VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState,
     calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter,
     classify_day_type, day_type_blocks_direction, compute_confidence,
+    micro_momentum_blocks,
 )
 from bot.futures.risk import is_daily_loss_limit_hit
 from bot.futures.db import get_market_bias
@@ -353,6 +354,16 @@ def job_scan(client):
                 log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
                 blocked_by = dt_block
                 direction = None
+
+            # Micro-momentum filter — catches the case where 20-bar SMA still says
+            # "up" but price has been falling for the last few bars (today's pattern).
+            # Faster reaction than the SMA-based trend filter below.
+            if direction:
+                mm_block = micro_momentum_blocks(channel_state, direction)
+                if mm_block:
+                    log.info('%s %s blocked: %s', symbol, direction, mm_block)
+                    blocked_by = mm_block
+                    direction = None
 
             # Hard trend filter — NO counter-trend reversions, even at extreme deviation.
             # Audit showed 7 consecutive NQ long stop-outs (-$440) when extreme override

@@ -245,6 +245,27 @@ def day_type_blocks_direction(day_type: str | None, direction: str) -> str | Non
     return None
 
 
+def micro_momentum_blocks(channel_state: ChannelState, direction: str, lookback: int = 3) -> str | None:
+    """Faster-reacting filter than the 20-bar SMA. Catches the case where SMA still
+    says 'up' but price has been monotonically falling for the last few bars — the
+    classic 'bot fights a turning market' setup that the slow SMA misses.
+
+    Returns a block reason string if the last `lookback` closes oppose the signal,
+    None otherwise.
+    """
+    window = list(channel_state._window)[-lookback:]
+    if len(window) < lookback:
+        return None  # not enough data — allow
+    if direction == 'long':
+        # If every close is lower than the previous, momentum is bearish — skip
+        if all(window[i] < window[i-1] for i in range(1, len(window))):
+            return f'micro-momentum bearish ({lookback} lower closes)'
+    elif direction == 'short':
+        if all(window[i] > window[i-1] for i in range(1, len(window))):
+            return f'micro-momentum bullish ({lookback} higher closes)'
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Confidence scoring 0-100
 # ---------------------------------------------------------------------------
