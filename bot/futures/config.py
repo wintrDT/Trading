@@ -53,8 +53,10 @@ RISK_RULES = {
     'fast_fail_max_neg_usd': -50.0,
     # Minimum confidence score 0-100 required to enter a trade. compute_confidence()
     # in strategy.py blends VWAP / trend / day_type / RSI / ATR regime / news calm.
-    # 60 = filter out roughly the bottom third of setups.
-    'min_confidence': 60,
+    # 75 = high-conviction only (lower-quality setups filtered out — was 60 on 2026-05-19
+    # after a morning chop session showed bot was firing low-quality longs into a turning
+    # market while day-type classifier was still inactive pre-10am ET).
+    'min_confidence': 75,
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does
