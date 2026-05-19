@@ -21,7 +21,165 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-TOPSTEPX_BASE = 'https://api.topstepx.com'
+TOPSTEPX_BASE      = 'https://api.topstepx.com'
+TOPSTEPX_MARKET_HUB = 'https://rtc.topstepx.com/hubs/market'
+
+
+# ============================================================================
+# Real-time market data stream (SignalR WebSocket)
+# ============================================================================
+class TopstepXMarketStream:
+    """SignalR WebSocket subscription for live TopstepX quote ticks.
+
+    Reads quotes for subscribed contracts into a shared in-memory dict so
+    get_futures_prices() returns sub-second-fresh data instead of polling REST
+    1-min bars. Falls back gracefully if the stream fails — caller can check
+    is_connected() and use REST polling as backup.
+
+    Method/event names are based on the ProjectX gateway convention (TopstepX
+    is ProjectX-powered). If names differ, the stream will log errors and the
+    bot stays on REST polling — no crashes.
+    """
+
+    def __init__(self, get_token):
+        self._get_token = get_token   # callable returning current bearer token
+        self._lock       = threading.Lock()
+        self._quotes     = {}          # contractId -> last price float
+        self._connection = None
+        self._connected  = False
+        self._subscribed = set()       # contract ids we want subscribed
+        self._last_tick_at = 0.0       # epoch seconds — for staleness checks
+
+    def connect(self) -> bool:
+        try:
+            from signalrcore.hub_connection_builder import HubConnectionBuilder
+        except ImportError:
+            log.error('signalrcore not installed — run `pip install signalrcore` to enable real-time prices')
+            return False
+
+        try:
+            token = self._get_token()
+            if not token:
+                log.warning('No token — cannot start TopstepX SignalR stream')
+                return False
+
+            url = f'{TOPSTEPX_MARKET_HUB}?access_token={token}'
+            self._connection = (HubConnectionBuilder()
+                .with_url(url, options={'skip_negotiation': True, 'verify_ssl': True})
+                .with_automatic_reconnect({
+                    'type': 'raw',
+                    'keep_alive_interval': 10,
+                    'reconnect_interval':  5,
+                    'max_attempts':        100,
+                })
+                .build())
+
+            # Try multiple event names — different ProjectX versions use different ones
+            for event in ('GatewayQuote', 'Quote', 'OnQuote', 'contractQuote'):
+                self._connection.on(event, self._on_quote)
+
+            self._connection.on_open(self._on_open)
+            self._connection.on_close(self._on_close)
+            self._connection.on_error(self._on_error)
+
+            self._connection.start()
+            return True
+        except Exception:
+            log.exception('TopstepX SignalR stream connect failed')
+            return False
+
+    def _on_open(self):
+        with self._lock:
+            self._connected = True
+        log.info('TopstepX SignalR market stream OPEN')
+        # Re-subscribe to all contracts (covers reconnects)
+        for contract_id in list(self._subscribed):
+            self._subscribe_internal(contract_id)
+
+    def _on_close(self):
+        with self._lock:
+            self._connected = False
+        log.warning('TopstepX SignalR market stream CLOSED')
+
+    def _on_error(self, data):
+        log.error('TopstepX SignalR error: %s', data)
+
+    def _on_quote(self, args):
+        """Quote handler — args structure varies by ProjectX version.
+
+        Typical shapes:
+          [contractId, {lastPrice, bid, ask, ...}]
+          {'contractId': '...', 'lastPrice': ...}
+        """
+        try:
+            contract_id = None
+            payload     = None
+
+            if isinstance(args, list) and len(args) >= 2:
+                contract_id = str(args[0])
+                payload     = args[1]
+            elif isinstance(args, list) and len(args) == 1:
+                payload     = args[0]
+                if isinstance(payload, dict):
+                    contract_id = str(payload.get('contractId') or payload.get('symbolId') or '')
+            elif isinstance(args, dict):
+                payload     = args
+                contract_id = str(args.get('contractId') or args.get('symbolId') or '')
+
+            if not (contract_id and isinstance(payload, dict)):
+                return
+
+            price = (payload.get('lastPrice') or payload.get('last')
+                     or payload.get('price')  or payload.get('lastTradePrice'))
+            if price is None:
+                # Some feeds publish bid/ask only — average them as fallback
+                bid = payload.get('bid'); ask = payload.get('ask')
+                if bid and ask:
+                    price = (float(bid) + float(ask)) / 2.0
+
+            if price is not None:
+                with self._lock:
+                    self._quotes[contract_id] = float(price)
+                    self._last_tick_at = time.time()
+        except Exception:
+            log.exception('TopstepX quote handler error: %s', args)
+
+    def subscribe(self, contract_id: str):
+        with self._lock:
+            self._subscribed.add(contract_id)
+        if self._connected:
+            self._subscribe_internal(contract_id)
+
+    def _subscribe_internal(self, contract_id: str):
+        # Try several method names — ProjectX has used different ones across versions
+        for method in ('SubscribeContractQuotes', 'SubscribeContractMarketData', 'Subscribe'):
+            try:
+                self._connection.send(method, [contract_id])
+                log.info('TopstepX subscribed %s via %s', contract_id, method)
+                return
+            except Exception:
+                continue
+        log.error('TopstepX: no working subscribe method found for %s', contract_id)
+
+    def get_price(self, contract_id: str):
+        with self._lock:
+            return self._quotes.get(str(contract_id))
+
+    def is_connected(self) -> bool:
+        # Treat as disconnected if no tick in 60s — feed went silent
+        if not self._connected:
+            return False
+        if self._last_tick_at and (time.time() - self._last_tick_at) > 60:
+            return False
+        return True
+
+    def stop(self):
+        try:
+            if self._connection:
+                self._connection.stop()
+        except Exception:
+            pass
+        self._connected = False
 
 # Symbol -> contract searchText used by /api/Contract/search. The endpoint
 # returns active contracts matching the search; we pick the front-month
@@ -54,6 +212,7 @@ class TopstepXClient:
         self._http       = httpx.Client(timeout=15.0, base_url=TOPSTEPX_BASE)
         self._connected  = False
         self._last_error = None         # most recent error string for diagnostics
+        self._stream     = None         # TopstepXMarketStream (SignalR) — set by connect()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -117,8 +276,25 @@ class TopstepXClient:
                 return False
 
             self._connected = True
-            log.info('TopstepX connected (account=%s, contracts=%d)',
-                     self.account_id, len(self._contracts))
+
+            # Start the SignalR market data stream for sub-second quotes.
+            # If it fails, get_futures_prices falls back to REST polling automatically.
+            try:
+                self._stream = TopstepXMarketStream(get_token=lambda: self._token)
+                if self._stream.connect():
+                    for contract_id in self._contracts.values():
+                        self._stream.subscribe(contract_id)
+                    log.info('TopstepX SignalR stream subscribed for %d contracts', len(self._contracts))
+                else:
+                    log.warning('TopstepX SignalR not started — using REST polling for prices')
+                    self._stream = None
+            except Exception:
+                log.exception('TopstepX SignalR setup error — falling back to REST polling')
+                self._stream = None
+
+            log.info('TopstepX connected (account=%s, contracts=%d, stream=%s)',
+                     self.account_id, len(self._contracts),
+                     'live' if self._stream else 'REST')
             return True
         except httpx.HTTPError as e:
             self._last_error = f'HTTP error: {e}'
@@ -130,6 +306,11 @@ class TopstepXClient:
             return False
 
     def disconnect(self):
+        if self._stream:
+            try:
+                self._stream.stop()
+            except Exception:
+                pass
         try:
             self._http.close()
         except Exception:
@@ -223,19 +404,37 @@ class TopstepXClient:
     # Market data
     # ------------------------------------------------------------------ #
     def get_futures_prices(self, symbols: list) -> dict:
-        """Polls the most recent 1-minute bar's close for each symbol.
+        """Returns {symbol: last_price} for each requested futures symbol.
 
-        TopstepX's REST historical-bars endpoint is the simplest live-price source
-        without standing up a SignalR WebSocket. Bar resolution is 1 minute, so
-        prices can lag by up to ~60s. Sufficient for the bot's 30s scan loop;
-        upgrade to SignalR real-time hub if tighter latency is needed.
+        Two paths:
+          1. SignalR stream (preferred) — sub-second tick prices read from memory
+          2. REST History fallback — 1-min bar polling, up to ~60s lag
         """
         if not self._connected:
             raise RuntimeError('TopstepX not connected')
+
+        # Path 1: SignalR stream — instant lookup
+        if self._stream and self._stream.is_connected():
+            out = {}
+            for symbol in symbols:
+                contract_id = self._contracts.get(symbol)
+                if contract_id:
+                    price = self._stream.get_price(contract_id)
+                    if price is not None:
+                        out[symbol] = price
+            if out:
+                return out
+            log.warning('SignalR connected but no quotes yet — falling back to REST this scan')
+
+        # Path 2: REST History fallback
+        return self._fetch_prices_rest(symbols)
+
+    def _fetch_prices_rest(self, symbols: list) -> dict:
+        """REST History bar polling. Used as fallback when SignalR isn't streaming."""
         self._ensure_token()
         out = {}
         end_time   = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(minutes=5)  # last 5 minutes = a few bars
+        start_time = end_time - timedelta(minutes=5)
         for symbol in symbols:
             contract_id = self._contracts.get(symbol)
             if not contract_id:
@@ -256,12 +455,11 @@ class TopstepXClient:
                         log.warning('History/retrieveBars %s -> HTTP %s', symbol, resp.status_code)
                         continue
                     payload = resp.json()
-                    # Response may be {'bars': [...]} or raw array
                     bars = payload.get('bars', []) if isinstance(payload, dict) else payload
                     if bars:
                         out[symbol] = float(bars[-1]['close'])
             except Exception:
-                log.exception('TopstepX price fetch failed for %s', symbol)
+                log.exception('TopstepX REST price fetch failed for %s', symbol)
         return out
 
     # ------------------------------------------------------------------ #
