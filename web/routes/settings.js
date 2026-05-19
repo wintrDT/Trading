@@ -233,6 +233,72 @@ router.post('/futures-topstepx', requireAuth, (req, res) => {
   res.redirect('/settings?saved=1');
 });
 
+// Test TopstepX connection — auth + account lookup + contract resolution
+// Returns detailed result so the user can see exactly what failed before going live
+router.post('/futures-topstepx/test', requireAuth, async (req, res) => {
+  const axios = require('axios');
+  const username   = getFuturesSetting('topstep_username',   '');
+  const apiKey     = getFuturesSetting('topstep_api_key',    '');
+  const accountId  = getFuturesSetting('topstep_account_id', '');
+
+  if (!username || !apiKey || !accountId) {
+    return res.json({ ok: false, stage: 'config', error: 'Username, API key, and account ID must all be saved first.' });
+  }
+
+  const BASE = 'https://api.topstepx.com';
+  try {
+    // Step 1: auth
+    const auth = await axios.post(`${BASE}/api/Auth/loginKey`, {
+      userName: username, apiKey: apiKey,
+    }, { timeout: 12000 });
+    const token = auth.data?.token || auth.data?.accessToken;
+    if (!token) {
+      return res.json({ ok: false, stage: 'auth', error: 'No token returned: ' + JSON.stringify(auth.data).slice(0, 300) });
+    }
+
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    // Step 2: account lookup
+    const accSearch = await axios.post(`${BASE}/api/Account/search`, { onlyActiveAccounts: true }, { headers, timeout: 10000 });
+    const accounts = accSearch.data?.accounts || accSearch.data || [];
+    if (!Array.isArray(accounts) || !accounts.length) {
+      return res.json({ ok: false, stage: 'account', error: 'No active accounts on this login.' });
+    }
+    const wantId = String(accountId);
+    const acct = accounts.find(a => String(a.id) === wantId);
+    if (!acct) {
+      const ids = accounts.map(a => String(a.id));
+      return res.json({ ok: false, stage: 'account', error: `Account ${accountId} not found. Available: ${ids.join(', ')}` });
+    }
+
+    // Step 3: contract resolution for ES + NQ
+    const resolved = {};
+    for (const sym of ['ES', 'NQ']) {
+      try {
+        const c = await axios.post(`${BASE}/api/Contract/search`, { searchText: sym, live: true }, { headers, timeout: 10000 });
+        const contracts = c.data?.contracts || c.data || [];
+        const active = contracts.find(x => x.activeContract) || contracts[0];
+        if (active) resolved[sym] = { id: active.id, name: active.name || active.description };
+      } catch (e) { /* keep going */ }
+    }
+
+    res.json({
+      ok: true,
+      account: {
+        id: acct.id,
+        name: acct.name,
+        balance: acct.balance,
+        canTrade: acct.canTrade,
+        simulated: acct.simulated,
+      },
+      contracts: resolved,
+    });
+  } catch (e) {
+    const msg = e.response?.data?.errorMessage || e.response?.data?.error || e.response?.statusText || e.message;
+    res.json({ ok: false, stage: 'http', error: msg, status: e.response?.status });
+  }
+});
+
 // Save Tastytrade credentials for off-hours futures price data
 router.post('/futures-tastytrade', requireAuth, (req, res) => {
   const { tt_provider_secret, tt_refresh_token, tt_account_number } = req.body;

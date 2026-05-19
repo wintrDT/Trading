@@ -331,8 +331,55 @@
               value="<%= topstepAccountId %>" placeholder="e.g. 12345">
           </div>
         </div>
-        <button type="submit" class="btn btn-primary" style="margin-top:1rem">Save</button>
+        <div style="display:flex;gap:.5rem;margin-top:1rem;">
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn" onclick="testTopstepX()"
+            style="background:rgba(245,166,35,0.15);border:1px solid rgba(245,166,35,0.4);color:#f5a623;">
+            Test Connection
+          </button>
+        </div>
       </form>
+      <pre id="topstep-test-result" style="display:none;margin-top:1rem;padding:0.85rem;border-radius:8px;font-size:12px;font-family:'Space Mono',monospace;white-space:pre-wrap;word-break:break-word;line-height:1.5;"></pre>
+      <script>
+        async function testTopstepX() {
+          const out = document.getElementById('topstep-test-result');
+          out.style.display = 'block';
+          out.style.background = 'rgba(255,255,255,0.04)';
+          out.style.color = 'var(--text2)';
+          out.style.border = '1px solid rgba(255,255,255,0.08)';
+          out.textContent = '⏳ Testing… (auth → account lookup → ES/NQ contract resolution)';
+          try {
+            const r = await fetch('/settings/futures-topstepx/test', { method: 'POST' });
+            const d = await r.json();
+            if (d.ok) {
+              out.style.background = 'rgba(0,212,160,0.08)';
+              out.style.border = '1px solid rgba(0,212,160,0.30)';
+              out.style.color = '#00d4a0';
+              out.textContent =
+                '✅ TopstepX connection OK\n\n' +
+                'Account #' + d.account.id + (d.account.name ? ' — ' + d.account.name : '') + '\n' +
+                'Balance: $' + (d.account.balance != null ? Number(d.account.balance).toLocaleString() : '?') + '\n' +
+                'Can trade: ' + d.account.canTrade + '\n' +
+                'Simulated: ' + d.account.simulated + '\n\n' +
+                'Resolved contracts:\n' +
+                Object.entries(d.contracts).map(([sym, c]) => '  ' + sym + ' → ' + c.id + (c.name ? ' (' + c.name + ')' : '')).join('\n');
+            } else {
+              out.style.background = 'rgba(255,79,79,0.08)';
+              out.style.border = '1px solid rgba(255,79,79,0.30)';
+              out.style.color = '#ff4f4f';
+              out.textContent =
+                '❌ Failed at stage: ' + (d.stage || 'unknown') + '\n' +
+                (d.status ? 'HTTP ' + d.status + '\n' : '') +
+                (d.error || 'No error message');
+            }
+          } catch (e) {
+            out.style.background = 'rgba(255,79,79,0.08)';
+            out.style.border = '1px solid rgba(255,79,79,0.30)';
+            out.style.color = '#ff4f4f';
+            out.textContent = '❌ Request failed: ' + e.message;
+          }
+        }
+      </script>
     </div>
 
     <!-- Tastytrade off-hours futures data -->

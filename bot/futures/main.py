@@ -480,17 +480,23 @@ def main():
     ts_user    = get_setting(FUTURES_DB_PATH, 'topstep_username',   '') or os.environ.get('TOPSTEP_USERNAME', '')
     ts_key     = get_setting(FUTURES_DB_PATH, 'topstep_api_key',    '') or os.environ.get('TOPSTEP_API_KEY',  '')
     ts_account = get_setting(FUTURES_DB_PATH, 'topstep_account_id', '') or os.environ.get('TOPSTEP_ACCOUNT',  '')
+    broker_label = 'sim'
     if ts_user and ts_key and ts_account:
         try:
             from bot.futures.topstep_client import TopstepXClient
             ts = TopstepXClient(ts_user, ts_key, ts_account)
             if ts.connect():
                 client = ts
+                broker_label = f'TopstepX (account {ts_account})'
                 log.info('TopstepX connected — prices + orders + account routing through TopStep')
+                notifier.notify_system(f'TopstepX connected — account {ts_account} live', level='info')
             else:
-                log.warning('TopstepX credentials set but connect() returned False — falling back')
-        except Exception:
+                err = getattr(ts, '_last_error', 'unknown') or 'unknown'
+                log.warning('TopstepX credentials set but connect() returned False — falling back. Reason: %s', err)
+                notifier.notify_system(f'TopstepX connect FAILED ({err}) — falling back to Tastytrade/sim', level='warning')
+        except Exception as e:
             log.exception('TopstepX connection failed — falling back to Tastytrade')
+            notifier.notify_system(f'TopstepX connection error: {e} — falling back', level='error')
 
     if client is None:
         tt_provider = get_setting(FUTURES_DB_PATH, 'tt_provider_secret', '') or os.environ.get('TT_SECRET', '')
@@ -501,6 +507,7 @@ def main():
                 tt = _TastyClient(tt_provider, tt_refresh, tt_account)
                 tt.connect()
                 client = tt
+                broker_label = 'Tastytrade DXFeed (prices only, sim orders)'
                 log.info('Tastytrade DXFeed connected — real-time futures prices off-hours')
             except Exception:
                 log.exception('Tastytrade connection failed — falling back to Finnhub/Yahoo Finance')
@@ -543,8 +550,9 @@ def main():
     scheduler.add_job(job_news, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='news_full')
     scheduler.add_job(job_news, 'date', run_date=datetime.now(ET), id='news_startup')
 
-    log.info('Futures bot running [%s]. Ctrl+C to stop.', 'SIM' if sim else ('DEMO' if tv_demo else 'LIVE'))
-    notifier.notify_system(f'Bot started — mode: {"SIM" if sim else ("DEMO" if tv_demo else "LIVE")}')
+    log.info('Futures bot running [%s] — broker: %s. Ctrl+C to stop.',
+             'SIM' if sim else ('DEMO' if tv_demo else 'LIVE'), broker_label)
+    notifier.notify_system(f'Bot started — mode: {"SIM" if sim else ("DEMO" if tv_demo else "LIVE")}, broker: {broker_label}')
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

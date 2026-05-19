@@ -44,13 +44,16 @@ class TopstepXClient:
     def __init__(self, username: str, api_key: str, account_id: str):
         self.username    = username
         self.api_key     = api_key
-        self.account_id  = int(account_id) if str(account_id).isdigit() else account_id
+        # Keep BOTH forms — TopstepX may return id as int or string; compare as both
+        self.account_id_raw = str(account_id)
+        self.account_id     = int(account_id) if str(account_id).isdigit() else account_id
         self._token      = None
         self._token_expires_at = 0.0   # epoch seconds
         self._contracts  = {}           # symbol -> resolved contract id (string)
         self._lock       = threading.Lock()
-        self._http       = httpx.Client(timeout=10.0, base_url=TOPSTEPX_BASE)
+        self._http       = httpx.Client(timeout=15.0, base_url=TOPSTEPX_BASE)
         self._connected  = False
+        self._last_error = None         # most recent error string for diagnostics
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -59,10 +62,13 @@ class TopstepXClient:
         """Authenticate and resolve front-month contracts.
 
         Returns True on success, False on any failure (logged) — caller falls
-        through to next broker option.
+        through to next broker option. Sets self._last_error with a human
+        readable string on failure for the diagnostic /settings test endpoint.
         """
-        if not (self.username and self.api_key and self.account_id):
-            log.info('TopstepX: missing credentials — skipping')
+        self._last_error = None
+        if not (self.username and self.api_key and self.account_id_raw):
+            self._last_error = 'Missing credentials (username/api_key/account_id)'
+            log.info('TopstepX: %s', self._last_error)
             return False
 
         try:
@@ -71,15 +77,30 @@ class TopstepXClient:
                     'userName': self.username,
                     'apiKey':   self.api_key,
                 })
-                resp.raise_for_status()
-                data = resp.json()
-                if not data.get('success') or not data.get('token'):
-                    log.error('TopstepX auth failed: %s', data)
+                if resp.status_code != 200:
+                    self._last_error = f'Auth HTTP {resp.status_code}: {resp.text[:200]}'
+                    log.error('TopstepX: %s', self._last_error)
                     return False
-                self._token = data['token']
+                data = resp.json()
+                token = data.get('token') or data.get('accessToken')
+                if not token:
+                    self._last_error = f'Auth response missing token: {data}'
+                    log.error('TopstepX: %s', self._last_error)
+                    return False
+                self._token = token
                 # JWTs from TopstepX typically last ~24h. Refresh proactively at 23h.
                 self._token_expires_at = time.time() + 23 * 3600
                 self._http.headers['Authorization'] = f'Bearer {self._token}'
+
+            # Verify the account exists and is tradeable before resolving contracts
+            try:
+                bal = self._fetch_account_balance()
+                log.info('TopstepX account found: balance=$%.2f canTrade=%s simulated=%s',
+                         bal['netLiquidatingValue'], bal['canTrade'], bal['simulated'])
+            except Exception as e:
+                self._last_error = f'Account lookup failed: {e}'
+                log.error('TopstepX: %s', self._last_error)
+                return False
 
             # Resolve front-month contract id for each symbol in our universe
             for symbol, search_text in _TOPSTEPX_SEARCH.items():
@@ -87,9 +108,12 @@ class TopstepXClient:
                 if contract_id:
                     self._contracts[symbol] = contract_id
                     log.info('TopstepX: resolved %s -> %s', symbol, contract_id)
+                else:
+                    log.warning('TopstepX: could not resolve %s contract', symbol)
 
             if not self._contracts:
-                log.error('TopstepX: no contracts resolved — disconnecting')
+                self._last_error = 'No tradeable contracts could be resolved'
+                log.error('TopstepX: %s', self._last_error)
                 return False
 
             self._connected = True
@@ -97,9 +121,11 @@ class TopstepXClient:
                      self.account_id, len(self._contracts))
             return True
         except httpx.HTTPError as e:
-            log.exception('TopstepX connect HTTP error: %s', e)
+            self._last_error = f'HTTP error: {e}'
+            log.exception('TopstepX connect HTTP error')
             return False
-        except Exception:
+        except Exception as e:
+            self._last_error = f'Unexpected error: {e}'
             log.exception('TopstepX connect unexpected error')
             return False
 
@@ -136,12 +162,19 @@ class TopstepXClient:
                     'searchText': search_text,
                     'live': True,
                 })
-                resp.raise_for_status()
-                contracts = resp.json().get('contracts', [])
+                if resp.status_code != 200:
+                    log.warning('Contract/search %s -> HTTP %s: %s', search_text, resp.status_code, resp.text[:200])
+                    return None
+                payload = resp.json()
+                # Response may be {'contracts': [...]} or a raw array
+                contracts = payload.get('contracts', []) if isinstance(payload, dict) else payload
+                if not contracts:
+                    log.warning('Contract/search %s returned empty list', search_text)
+                    return None
                 # Prefer activeContract=True (front-month)
                 active = [c for c in contracts if c.get('activeContract')]
-                pick   = active[0] if active else (contracts[0] if contracts else None)
-                return pick['id'] if pick else None
+                pick   = active[0] if active else contracts[0]
+                return str(pick['id']) if pick.get('id') is not None else None
         except Exception:
             log.exception('TopstepX contract resolution failed for %s', search_text)
             return None
@@ -149,24 +182,24 @@ class TopstepXClient:
     # ------------------------------------------------------------------ #
     # Account
     # ------------------------------------------------------------------ #
-    def get_account_balance(self) -> dict:
-        """Returns shape compatible with main.job_snapshot:
-            {'netLiquidatingValue', 'cashBalance', 'openTradeEquity', 'realizedPnL'}
-        """
-        if not self._connected:
-            raise RuntimeError('TopstepX not connected')
-        self._ensure_token()
+    def _fetch_account_balance(self) -> dict:
+        """Internal — fetches balance without the _connected guard, used during connect()."""
         with self._lock:
             resp = self._http.post('/api/Account/search', json={'onlyActiveAccounts': True})
-            resp.raise_for_status()
-            accounts = resp.json().get('accounts', [])
-            acct = next((a for a in accounts if a.get('id') == self.account_id), None)
+            if resp.status_code != 200:
+                raise RuntimeError(f'/api/Account/search HTTP {resp.status_code}: {resp.text[:200]}')
+            payload = resp.json()
+            # Response may be {'accounts': [...]} or a raw array — handle both
+            accounts = payload.get('accounts', []) if isinstance(payload, dict) else payload
+            if not accounts:
+                raise RuntimeError('No active accounts returned by TopstepX')
+            # Compare account IDs as strings — TopstepX returns numeric ints,
+            # but credentials are strings from the DB
+            acct = next((a for a in accounts if str(a.get('id')) == self.account_id_raw), None)
             if acct is None:
-                raise RuntimeError(f'TopstepX account {self.account_id} not found')
+                ids = [str(a.get('id')) for a in accounts]
+                raise RuntimeError(f'Account {self.account_id_raw} not found — accounts on file: {ids}')
 
-            # TradingAccountModel has 'balance' — TopstepX doesn't return separate
-            # cash vs equity for sim/funded accounts. Use balance for all three fields
-            # so existing snapshot/dashboard code keeps working.
             balance = float(acct.get('balance', 0))
             return {
                 'netLiquidatingValue': balance,
@@ -176,6 +209,15 @@ class TopstepXClient:
                 'canTrade':            bool(acct.get('canTrade', False)),
                 'simulated':           bool(acct.get('simulated', True)),
             }
+
+    def get_account_balance(self) -> dict:
+        """Returns shape compatible with main.job_snapshot:
+            {'netLiquidatingValue', 'cashBalance', 'openTradeEquity', 'realizedPnL'}
+        """
+        if not self._connected:
+            raise RuntimeError('TopstepX not connected')
+        self._ensure_token()
+        return self._fetch_account_balance()
 
     # ------------------------------------------------------------------ #
     # Market data
@@ -210,8 +252,12 @@ class TopstepXClient:
                         'limit':             5,
                         'includePartialBar': True,
                     })
-                    resp.raise_for_status()
-                    bars = resp.json().get('bars', [])
+                    if resp.status_code != 200:
+                        log.warning('History/retrieveBars %s -> HTTP %s', symbol, resp.status_code)
+                        continue
+                    payload = resp.json()
+                    # Response may be {'bars': [...]} or raw array
+                    bars = payload.get('bars', []) if isinstance(payload, dict) else payload
                     if bars:
                         out[symbol] = float(bars[-1]['close'])
             except Exception:
@@ -243,8 +289,35 @@ class TopstepXClient:
                 'side':       side,
                 'size':       int(contracts),
             })
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                raise RuntimeError(f'/api/Order/place HTTP {resp.status_code}: {resp.text[:300]}')
             data = resp.json()
-            if not data.get('success'):
-                raise RuntimeError(f'TopstepX order rejected: {data}')
-            return {'orderId': data.get('orderId') or data.get('id') or 'UNKNOWN'}
+            # success flag is optional — some endpoints just return orderId; check both
+            if data.get('success') is False:
+                err = data.get('errorMessage') or data.get('error') or 'unknown error'
+                raise RuntimeError(f'TopstepX order rejected: {err}')
+            order_id = data.get('orderId') or data.get('id') or data.get('order', {}).get('id')
+            if not order_id:
+                raise RuntimeError(f'TopstepX order placed but no orderId in response: {data}')
+            return {'orderId': str(order_id)}
+
+    # ------------------------------------------------------------------ #
+    # Diagnostics — for "Test Connection" button in settings
+    # ------------------------------------------------------------------ #
+    def test_connection(self) -> dict:
+        """Try to authenticate + look up account + resolve contracts.
+        Returns a detailed dict for UI display. Never raises.
+        """
+        ok = self.connect()
+        if not ok:
+            return {
+                'success': False,
+                'stage':   'connect',
+                'error':   self._last_error or 'Unknown error',
+            }
+        # If we got here, we have token + account + at least one contract
+        return {
+            'success':   True,
+            'account':   self.account_id_raw,
+            'contracts': dict(self._contracts),  # copy for response
+        }
