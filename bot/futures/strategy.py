@@ -270,13 +270,15 @@ def micro_momentum_blocks(channel_state: ChannelState, direction: str, lookback:
 # Confidence scoring 0-100
 # ---------------------------------------------------------------------------
 # Inputs we have today (no paid Level-2 feed required):
-#   - VWAP deviation magnitude vs threshold       (0-25 pts)
+#   - VWAP deviation magnitude vs threshold       (0-32 pts)  — boosted
 #   - SMA trend agreement with signal direction   (0-20 pts)
 #   - Day-type favorability for this trade        (0-20 pts)
-#   - RSI in confirming range                     (0-15 pts)
+#   - RSI in confirming range                     (0-8 pts)   — reduced (was 15)
 #   - ATR regime is normal (not extreme)          (0-10 pts)
 #   - News calm (no near-event scaling triggered) (0-10 pts)
 # Total possible: 100. We block entries below a configurable threshold.
+# RSI weight lowered per user direction — confidence score should dominate
+# final filtering, not single-indicator hard blocks.
 #
 # When paid data is added (Polygon/Databento): cumulative delta and liquidity
 # sweep slots get appended here and the score expands to 130-150.
@@ -295,11 +297,13 @@ def compute_confidence(
     """Returns (score_0_to_100, breakdown_dict_for_display)."""
     breakdown = {}
 
-    # 1. VWAP deviation strength (0-25): more extreme = stronger signal
+    # 1. VWAP deviation strength (0-32): more extreme = stronger signal.
+    # Boosted from 0-25 after reducing RSI weight — the deviation magnitude is
+    # the strongest single quality signal in a reversion strategy.
     if dev_pct is not None and dev_threshold > 0:
         ratio = abs(dev_pct) / dev_threshold
-        # 1x threshold = 10 pts, 2x = 20 pts, 3x+ = 25 pts (cap)
-        dev_score = min(25, int(ratio * 10))
+        # 1x threshold = 13 pts, 2x = 26 pts, 2.5x+ = 32 pts (cap)
+        dev_score = min(32, int(ratio * 13))
     else:
         dev_score = 0
     breakdown['dev'] = dev_score
@@ -325,23 +329,22 @@ def compute_confidence(
     dt_score = favorable.get(direction, {}).get(day_type or 'balance_day', 10)
     breakdown['day_type'] = dt_score
 
-    # 4. RSI in confirming range (0-15)
-    # For reversion long: RSI low-to-mid = good (still oversold-ish but bouncing)
-    # For reversion short: RSI mid-to-high = good
+    # 4. RSI in confirming range (0-8) — REDUCED from 0-15 per user direction.
+    # RSI is now a minor input; the bulk of filtering happens via VWAP dev / trend
+    # / day type. Same scoring shape as before, just scaled down by ~half.
     if rsi is None:
-        rsi_score = 8
+        rsi_score = 4
     elif direction == 'long':
-        # 30-55 is sweet spot for a reversion bounce; above 70 = exhausted
-        if   30 <= rsi <= 55: rsi_score = 15
-        elif 25 <= rsi < 30:  rsi_score = 12
-        elif 55 <  rsi <= 65: rsi_score = 10
-        elif 65 <  rsi <= 75: rsi_score = 5
+        if   30 <= rsi <= 55: rsi_score = 8
+        elif 25 <= rsi < 30:  rsi_score = 6
+        elif 55 <  rsi <= 65: rsi_score = 5
+        elif 65 <  rsi <= 75: rsi_score = 3
         else:                 rsi_score = 0
     else:  # short
-        if   45 <= rsi <= 70: rsi_score = 15
-        elif 70 <  rsi <= 75: rsi_score = 12
-        elif 35 <= rsi < 45:  rsi_score = 10
-        elif 25 <= rsi < 35:  rsi_score = 5
+        if   45 <= rsi <= 70: rsi_score = 8
+        elif 70 <  rsi <= 75: rsi_score = 6
+        elif 35 <= rsi < 45:  rsi_score = 5
+        elif 25 <= rsi < 35:  rsi_score = 3
         else:                 rsi_score = 0
     breakdown['rsi'] = rsi_score
 

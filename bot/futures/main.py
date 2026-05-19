@@ -376,15 +376,10 @@ def job_scan(client):
                 blocked_by = 'trend=up (no shorts)'
 
             if direction:
-                # Reversion RSI: with bounce already confirmed, block entries where RSI shows
-                # the move is mostly done — preserves freshness without being too restrictive.
-                rsi_ok = (rsi is None or
-                          (direction == 'long'  and rsi < 70) or
-                          (direction == 'short' and rsi > 30))
-                if not rsi_ok:
-                    blocked_by = f'rsi={round(rsi, 1) if rsi else "?"}'
-                else:
-                    signal, strategy = direction, 'vwap'
+                # RSI is now an INPUT to the confidence score, not a hard gate.
+                # Per user direction — let the confidence score do final filtering
+                # instead of single-indicator hard blocks.
+                signal, strategy = direction, 'vwap'
 
         orb_dir = check_orb_signal(price, orb_state, orb_end_min,
                                     STRATEGY_PARAMS['orb_min_range_ticks'], tick)
