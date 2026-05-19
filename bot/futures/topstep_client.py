@@ -188,9 +188,15 @@ class TopstepXMarketStream:
 # refers to instruments by those throughout. VALUES are the TopstepX search
 # text. Update the contract codes each quarter as the front-month rolls.
 _TOPSTEPX_SEARCH = {
-    'ES': 'ESM26',   # E-mini S&P 500 — June 2026 front-month
-    'NQ': 'NQM26',   # E-mini Nasdaq-100 — June 2026 front-month
+    'ES': 'ESM6',   # E-mini S&P 500 — June 2026 front-month (TopStep uses 1-digit year)
+    'NQ': 'NQM6',   # E-mini Nasdaq-100 — June 2026 front-month
 }
+# Quarterly rollover reminder:
+#   March  -> H (e.g. ESH6, NQH6)
+#   June   -> M (current: ESM6, NQM6)
+#   Sept   -> U (e.g. ESU6, NQU6)
+#   Dec    -> Z (e.g. ESZ6, NQZ6)
+# Update this dict the day after rollover (typically ~8 days before contract expiry).
 
 # TopstepX order type / side enums (from swagger schema)
 _ORDER_TYPE_MARKET = 2     # 1=Limit, 2=Market, 3=Stop, 4=TrailingStop
@@ -359,12 +365,25 @@ class TopstepXClient:
                     if not contracts:
                         log.info('Contract/search %s live=%s returned 0 — trying next', search_text, live_flag)
                         continue
-                    names = [f"{c.get('id')}={c.get('name', '?')} active={c.get('activeContract')}" for c in contracts[:5]]
+                    names = [f"{c.get('id')}={c.get('name', '?')} sym={c.get('symbolId','?')} active={c.get('activeContract')}" for c in contracts[:5]]
                     log.info('Contract/search %s live=%s -> %d results: %s',
                              search_text, live_flag, len(contracts), names)
+                    # Prefer activeContract=True (front-month)
                     active = [c for c in contracts if c.get('activeContract')]
-                    pick   = active[0] if active else contracts[0]
+                    candidates = active if active else contracts
+                    # Within candidates, prefer the FULL-size E-mini over the Micro.
+                    # TopstepX symbolIds: F.US.EP (full ES) vs F.US.MES (Micro). The Micro
+                    # base symbols always start with 'M' (MES, MNQ, MGC, MYM, M2K, etc.).
+                    def _is_micro(c):
+                        sym = (c.get('symbolId') or '').upper()
+                        parts = sym.split('.')
+                        if len(parts) >= 3:
+                            return parts[2].startswith('M') and parts[2] != 'M6'  # M6 = Yen
+                        return False
+                    non_micro = [c for c in candidates if not _is_micro(c)]
+                    pick = non_micro[0] if non_micro else candidates[0]
                     if pick.get('id') is not None:
+                        log.info('  picked %s (sym=%s)', pick.get('id'), pick.get('symbolId'))
                         return str(pick['id'])
             except Exception:
                 log.exception('TopstepX contract resolution failed for %s (live=%s)', search_text, live_flag)
