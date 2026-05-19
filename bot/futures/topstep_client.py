@@ -184,10 +184,12 @@ class TopstepXMarketStream:
 # Symbol -> contract searchText used by /api/Contract/search. The endpoint
 # returns active contracts matching the search; we pick the front-month
 # (activeContract=True) at connect() time.
+# KEYS must match SYMBOLS in bot/futures/config.py ('ES', 'NQ') — the bot
+# refers to instruments by those throughout. VALUES are the TopstepX search
+# text. Update the contract codes each quarter as the front-month rolls.
 _TOPSTEPX_SEARCH = {
-    'ES': 'ES',   # E-mini S&P 500
-    'NQ': 'NQ',   # E-mini Nasdaq-100
-    'GC': 'GC',   # Gold
+    'ES': 'ESM26',   # E-mini S&P 500 — June 2026 front-month
+    'NQ': 'NQM26',   # E-mini Nasdaq-100 — June 2026 front-month
 }
 
 # TopstepX order type / side enums (from swagger schema)
@@ -344,14 +346,17 @@ class TopstepXClient:
                     'live': True,
                 })
                 if resp.status_code != 200:
-                    log.warning('Contract/search %s -> HTTP %s: %s', search_text, resp.status_code, resp.text[:200])
+                    log.warning('Contract/search %s -> HTTP %s: %s', search_text, resp.status_code, resp.text[:300])
                     return None
                 payload = resp.json()
                 # Response may be {'contracts': [...]} or a raw array
                 contracts = payload.get('contracts', []) if isinstance(payload, dict) else payload
                 if not contracts:
-                    log.warning('Contract/search %s returned empty list', search_text)
+                    log.warning('Contract/search %s returned empty list. Full response: %s', search_text, payload)
                     return None
+                # Log what came back so we can see if the search text matches reality
+                names = [f"{c.get('id')}={c.get('name', '?')} active={c.get('activeContract')}" for c in contracts[:5]]
+                log.info('Contract/search %s -> %d results: %s', search_text, len(contracts), names)
                 # Prefer activeContract=True (front-month)
                 active = [c for c in contracts if c.get('activeContract')]
                 pick   = active[0] if active else contracts[0]
