@@ -29,14 +29,17 @@ def place_entry(client, db_path, signal, contracts, sim=False):
     if cooldown:
         last_close, last_reason = get_last_close_info(db_path, symbol)
         if last_close:
-            # 3x cooldown after a stop_loss — prevents revenge entries
+            # 3x cooldown after stop_loss; 2x more if we're near a news event
             effective_cooldown = cooldown * 3 if last_reason == 'stop_loss' else cooldown
+            if signal.get('near_event'):
+                effective_cooldown *= 2
             last_dt = datetime.fromisoformat(last_close.replace('Z', '+00:00'))
             if last_dt.tzinfo is None:
                 last_dt = last_dt.replace(tzinfo=timezone.utc)
             elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds() / 60
             if elapsed < effective_cooldown:
                 suffix = ' (post-stop)' if last_reason == 'stop_loss' else ''
+                if signal.get('near_event'): suffix += ' (near event)'
                 log.info('Skipping %s — cooldown %.1f min remaining%s',
                          symbol, effective_cooldown - elapsed, suffix)
                 return None
@@ -60,6 +63,11 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         floor_ticks    = max(4, stop_ticks // 2)
         ceiling_ticks  = stop_ticks * 2 + (stop_ticks // 2)  # 2.5x the fixed stop
         stop_ticks     = max(floor_ticks, min(ceiling_ticks, atr_stop_ticks))
+
+    # News volatility engine — widen stop, tighten target when near a scheduled event
+    if signal.get('near_event'):
+        stop_ticks   = int(stop_ticks * 1.25)   # 25% wider stop (survive vol spike)
+        target_ticks = max(4, int(target_ticks * 0.75))  # 25% closer target (take profit faster)
 
     stop_price   = calc_stop_price(direction, price, stop_ticks, tick)
 

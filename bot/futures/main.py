@@ -216,9 +216,12 @@ def job_scan(client):
     today_date  = datetime.now(ET).strftime('%Y-%m-%d')
     now_iso     = datetime.now(ET).isoformat()
     event_times = get_today_event_times(FUTURES_DB_PATH, today_date)
-    from bot.futures.risk import is_news_blackout
-    if is_news_blackout(now_iso, RISK_RULES['news_blackout_minutes'], event_times):
-        log.info('News blackout active — skipping scan')
+    from bot.futures.risk import news_regime
+    news_state = news_regime(now_iso, event_times,
+                             blackout_min=RISK_RULES['news_blackout_minutes'],
+                             near_min=15)
+    if news_state['state'] == 'pause':
+        log.info('News blackout active (event %.1f min away) — skipping scan', news_state['minutes_to'] or 0)
         return
 
     try:
@@ -367,15 +370,12 @@ def job_scan(client):
             signal, strategy = orb_dir, 'orb'
             blocked_by = None
 
-        # News bias gate — hard-block trades against rolling headline sentiment.
-        # Same "no override" rule we use for trend filter: extreme deviations into
-        # bad news/trend were knife-catches, not opportunities.
+        # News bias is now a SOFT volatility input — not a hard block.
+        # Trades against bias get half size (handled in trader.py via signal['bias_disagrees']).
+        # Trades with bias keep normal size.
+        news_bias_for_symbol = None
         if signal:
-            bias = get_market_bias(FUTURES_DB_PATH, symbol)
-            if bias and bias != signal:
-                log.info('%s %s blocked by news bias (%s)', symbol, signal, bias)
-                blocked_by = f'news bias ({bias})'
-                signal, strategy = None, None
+            news_bias_for_symbol = get_market_bias(FUTURES_DB_PATH, symbol)
 
         # Time-of-day block — applied last so the signal/blocked_by reflects the real reason
         if signal and hour_blocked:
@@ -422,12 +422,25 @@ def job_scan(client):
         elif _dt == 'low_vol_chop':
             contracts = 1
             log.info('low_vol_chop regime — flooring size to 1 for %s', contracts)
+        # News regime sizing: near a scheduled event = half size + wider stop + tighter target
+        bias_disagrees = bool(news_bias_for_symbol and news_bias_for_symbol != signal)
+        if news_state['state'] == 'near_event':
+            contracts = max(1, contracts // 2)
+            log.info('near_event regime (%.1f min) — halving size to %d for %s',
+                     news_state['minutes_to'] or 0, contracts, symbol)
+        if bias_disagrees:
+            contracts = max(1, contracts // 2)
+            log.info('news bias (%s) disagrees with %s signal — halving size to %d for %s',
+                     news_bias_for_symbol, signal, contracts, symbol)
         log.info('Signal: %s %s %s @ %.2f contracts=%d', strategy, signal, symbol, price, contracts)
         place_entry(client, FUTURES_DB_PATH, {
             'symbol': symbol, 'strategy': strategy,
             'direction': signal, 'price': price, 'signal_id': signal_id,
             'entry_rsi': rsi, 'entry_dev_pct': dev_pct, 'vwap': vwap,
             'trend': trend, 'atr': vol_state.atr(),
+            # News volatility engine inputs
+            'near_event': news_state['state'] == 'near_event',
+            'bias_disagrees': bias_disagrees,
         }, contracts=contracts, sim=sim)
 
     # Persist status so the dashboard can show live conditions
