@@ -345,8 +345,33 @@ def job_scan(client):
             direction = _check_reversion_entry(symbol, dev_pct, tuned_dev_long, tuned_dev_short)
 
             pending = _peak_dev.get(symbol)
+
+            # High-confidence override on bounce: if armed AND confidence for the pending
+            # direction is >= override threshold, skip the retrace wait and fire now.
+            # A 92 score shouldn't sit waiting for a 0.05% retrace that may never come.
             if direction is None and pending:
-                blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
+                atr_now      = vol_state.atr()
+                atr_baseline = vol_state.atr_baseline()
+                atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
+                _bias = get_market_bias(FUTURES_DB_PATH, symbol)
+                pending_dir = pending['side']
+                pending_conf, _ = compute_confidence(
+                    direction=pending_dir, dev_pct=dev_pct,
+                    dev_threshold=tuned_dev_long if pending_dir == 'long' else tuned_dev_short,
+                    sma_trend=trend, day_type=_day_type_cache.get(symbol),
+                    rsi=rsi, atr_ratio=atr_ratio,
+                    near_event=news_state['state'] == 'near_event',
+                    bias_disagrees=bool(_bias and _bias != pending_dir),
+                )
+                override_threshold = RISK_RULES.get('confidence_override', 70)
+                if pending_conf >= override_threshold:
+                    log.info('%s %s — confidence %d >= %d, BYPASSING bounce confirmation',
+                             symbol, pending_dir, pending_conf, override_threshold)
+                    direction = pending_dir
+                    _peak_dev.pop(symbol, None)
+                    pending = None
+                else:
+                    blocked_by = f'pending {pending_dir} (peak {pending["peak"]:.3f}%, conf {pending_conf}<{override_threshold})'
 
             # Compute confidence FIRST so high-conviction setups can bypass
             # the single-indicator filters below.
