@@ -463,6 +463,29 @@
               <span style="color:<%= dt.color %>;font-weight:600;"><%= dt.emoji %> <%= dt.label %></span>
             </div>
             <% } %>
+            <% if (s.confidence != null) {
+                 const conf = s.confidence;
+                 const cColor = conf >= 75 ? '#00d4a0' : conf >= 60 ? '#64b4ff' : conf >= 40 ? '#f5a623' : '#ff4f4f';
+            %>
+            <div style="margin-top:0.4rem;font-size:0.72rem;color:var(--text2);" title="<%= s.conf_break ? JSON.stringify(s.conf_break) : '' %>">
+              Confidence:
+              <span style="color:<%= cColor %>;font-weight:700;font-family:'Space Mono',monospace;"><%= conf %>/100</span>
+              <% if (s.conf_break) { %>
+                <span style="color:var(--text2);font-size:0.65rem;margin-left:6px;">
+                  (dev <%= s.conf_break.dev %> · trend <%= s.conf_break.trend %> · day <%= s.conf_break.day_type %> · rsi <%= s.conf_break.rsi %> · atr <%= s.conf_break.atr %> · news <%= s.conf_break.news %>)
+                </span>
+              <% } %>
+            </div>
+            <% } %>
+            <% if (s.news_state && s.news_state !== 'normal') { %>
+            <div style="margin-top:0.3rem;font-size:0.72rem;">
+              <% if (s.news_state === 'pause') { %>
+                <span style="color:#ff4f4f;font-weight:700;">🛑 NEWS PAUSE</span>
+              <% } else if (s.news_state === 'near_event') { %>
+                <span style="color:#f5a623;font-weight:600;">⚡ NEAR EVENT — size halved, stop wider, target tighter</span>
+              <% } %>
+            </div>
+            <% } %>
             <!-- Signal state -->
             <div style="margin-top:0.5rem;font-size:0.74rem;">
               <% if (s.signal) { %>

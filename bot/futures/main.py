@@ -24,7 +24,7 @@ from bot.tt_client import TastytradeClient as _TastyClient
 from bot.futures.strategy import (
     VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState,
     calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter,
-    classify_day_type, day_type_blocks_direction,
+    classify_day_type, day_type_blocks_direction, compute_confidence,
 )
 from bot.futures.risk import is_daily_loss_limit_hit
 from bot.futures.db import get_market_bias
@@ -377,6 +377,31 @@ def job_scan(client):
         if signal:
             news_bias_for_symbol = get_market_bias(FUTURES_DB_PATH, symbol)
 
+        # Confidence score 0-100 — composite signal quality gate. Below threshold = skip.
+        confidence_score = None
+        confidence_breakdown = None
+        if signal:
+            atr_now      = vol_state.atr()
+            atr_baseline = vol_state.atr_baseline()
+            atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
+            confidence_score, confidence_breakdown = compute_confidence(
+                direction=signal,
+                dev_pct=dev_pct,
+                dev_threshold=tuned_dev_long if signal == 'long' else tuned_dev_short,
+                sma_trend=trend,
+                day_type=_day_type_cache.get(symbol),
+                rsi=rsi,
+                atr_ratio=atr_ratio,
+                near_event=news_state['state'] == 'near_event',
+                bias_disagrees=bool(news_bias_for_symbol and news_bias_for_symbol != signal),
+            )
+            min_conf = RISK_RULES.get('min_confidence', 60)
+            if confidence_score < min_conf:
+                log.info('%s %s blocked by confidence %d < %d (%s)', symbol, signal,
+                         confidence_score, min_conf, confidence_breakdown)
+                blocked_by = f'confidence {confidence_score}/100 < {min_conf}'
+                signal, strategy = None, None
+
         # Time-of-day block — applied last so the signal/blocked_by reflects the real reason
         if signal and hour_blocked:
             log.info('%s %s blocked — hour %02d:00 ET historically loses', symbol, signal, et_hour_now)
@@ -386,19 +411,22 @@ def job_scan(client):
         orb_hi = orb_state.high if orb_state._ready and orb_state.high != float('-inf') else None
         orb_lo = orb_state.low  if orb_state._ready and orb_state.low  != float('inf')  else None
         status_map[symbol] = {
-            'price':     price,
-            'vwap':      round(vwap, 2) if vwap else None,
-            'dev_pct':   dev_pct,
-            'threshold': round((tuned_dev_long + tuned_dev_short) / 2, 4),
-            'sma':       round(sma, 2) if sma else None,
-            'rsi':       round(rsi, 1) if rsi else None,
-            'trend':     trend,
-            'day_type':  _day_type_cache.get(symbol),
-            'signal':    signal,
+            'price':      price,
+            'vwap':       round(vwap, 2) if vwap else None,
+            'dev_pct':    dev_pct,
+            'threshold':  round((tuned_dev_long + tuned_dev_short) / 2, 4),
+            'sma':        round(sma, 2) if sma else None,
+            'rsi':        round(rsi, 1) if rsi else None,
+            'trend':      trend,
+            'day_type':   _day_type_cache.get(symbol),
+            'signal':     signal,
             'blocked_by': blocked_by,
-            'session':   'active',
-            'orb_high':  round(orb_hi, 2) if orb_hi else None,
-            'orb_low':   round(orb_lo, 2) if orb_lo else None,
+            'confidence': confidence_score,
+            'conf_break': confidence_breakdown,
+            'news_state': news_state['state'],
+            'session':    'active',
+            'orb_high':   round(orb_hi, 2) if orb_hi else None,
+            'orb_low':    round(orb_lo, 2) if orb_lo else None,
         }
 
         # Channel disabled — stale data causes it to buy tops and sell bottoms

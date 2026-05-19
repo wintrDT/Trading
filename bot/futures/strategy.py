@@ -245,6 +245,106 @@ def day_type_blocks_direction(day_type: str | None, direction: str) -> str | Non
     return None
 
 
+# ---------------------------------------------------------------------------
+# Confidence scoring 0-100
+# ---------------------------------------------------------------------------
+# Inputs we have today (no paid Level-2 feed required):
+#   - VWAP deviation magnitude vs threshold       (0-25 pts)
+#   - SMA trend agreement with signal direction   (0-20 pts)
+#   - Day-type favorability for this trade        (0-20 pts)
+#   - RSI in confirming range                     (0-15 pts)
+#   - ATR regime is normal (not extreme)          (0-10 pts)
+#   - News calm (no near-event scaling triggered) (0-10 pts)
+# Total possible: 100. We block entries below a configurable threshold.
+#
+# When paid data is added (Polygon/Databento): cumulative delta and liquidity
+# sweep slots get appended here and the score expands to 130-150.
+def compute_confidence(
+    *,
+    direction: str,                       # 'long' or 'short'
+    dev_pct: float | None,                # VWAP deviation in %
+    dev_threshold: float,                 # current dynamic threshold
+    sma_trend: str | None,                # 'up' / 'down' / None
+    day_type: str | None,                 # one of DAY_TYPES
+    rsi: float | None,                    # current RSI
+    atr_ratio: float | None,              # atr / atr_baseline (1.0 = normal)
+    near_event: bool,                     # True if within 15 min of news
+    bias_disagrees: bool,                 # True if rolling sentiment disagrees
+) -> tuple[int, dict]:
+    """Returns (score_0_to_100, breakdown_dict_for_display)."""
+    breakdown = {}
+
+    # 1. VWAP deviation strength (0-25): more extreme = stronger signal
+    if dev_pct is not None and dev_threshold > 0:
+        ratio = abs(dev_pct) / dev_threshold
+        # 1x threshold = 10 pts, 2x = 20 pts, 3x+ = 25 pts (cap)
+        dev_score = min(25, int(ratio * 10))
+    else:
+        dev_score = 0
+    breakdown['dev'] = dev_score
+
+    # 2. SMA trend agreement (0-20)
+    if sma_trend == direction or (sma_trend == 'up' and direction == 'long') or (sma_trend == 'down' and direction == 'short'):
+        trend_score = 20
+    elif sma_trend is None:
+        trend_score = 10  # unknown = neutral
+    else:
+        trend_score = 0
+    breakdown['trend'] = trend_score
+
+    # 3. Day-type favorability (0-20)
+    favorable = {
+        'long':  {'trend_day_up': 20, 'gap_and_go_up': 18, 'balance_day': 12,
+                  'auction_reversal': 14, 'news_expansion': 6, 'low_vol_chop': 8,
+                  'trend_day_down': 0, 'gap_and_go_down': 0},
+        'short': {'trend_day_down': 20, 'gap_and_go_down': 18, 'balance_day': 12,
+                  'auction_reversal': 14, 'news_expansion': 6, 'low_vol_chop': 8,
+                  'trend_day_up': 0, 'gap_and_go_up': 0},
+    }
+    dt_score = favorable.get(direction, {}).get(day_type or 'balance_day', 10)
+    breakdown['day_type'] = dt_score
+
+    # 4. RSI in confirming range (0-15)
+    # For reversion long: RSI low-to-mid = good (still oversold-ish but bouncing)
+    # For reversion short: RSI mid-to-high = good
+    if rsi is None:
+        rsi_score = 8
+    elif direction == 'long':
+        # 30-55 is sweet spot for a reversion bounce; above 70 = exhausted
+        if   30 <= rsi <= 55: rsi_score = 15
+        elif 25 <= rsi < 30:  rsi_score = 12
+        elif 55 <  rsi <= 65: rsi_score = 10
+        elif 65 <  rsi <= 75: rsi_score = 5
+        else:                 rsi_score = 0
+    else:  # short
+        if   45 <= rsi <= 70: rsi_score = 15
+        elif 70 <  rsi <= 75: rsi_score = 12
+        elif 35 <= rsi < 45:  rsi_score = 10
+        elif 25 <= rsi < 35:  rsi_score = 5
+        else:                 rsi_score = 0
+    breakdown['rsi'] = rsi_score
+
+    # 5. ATR regime is normal (0-10) — extreme volatility = lower confidence
+    if atr_ratio is None:
+        atr_score = 5
+    elif 0.7 <= atr_ratio <= 1.5:
+        atr_score = 10
+    elif 0.5 <= atr_ratio < 0.7 or 1.5 < atr_ratio <= 2.0:
+        atr_score = 6
+    else:
+        atr_score = 2
+    breakdown['atr'] = atr_score
+
+    # 6. News calm (0-10) — anything near event = penalty
+    news_score = 10 if not near_event else 4
+    if bias_disagrees:
+        news_score = max(0, news_score - 4)
+    breakdown['news'] = news_score
+
+    total = dev_score + trend_score + dt_score + rsi_score + atr_score + news_score
+    return min(100, total), breakdown
+
+
 @dataclass
 class RSIState:
     _prices: deque = field(default_factory=lambda: deque(maxlen=15))
