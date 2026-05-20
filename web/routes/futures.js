@@ -189,7 +189,12 @@ router.post('/toggle-trading', requireAuth, (req, res) => {
   }
 });
 
-router.post('/close/:id', requireAuth, (req, res) => {
+// Close an open futures position. For LIVE trades (order_id != 'SIM') this
+// FIRST closes the real position at TopStep, then marks the DB closed. If the
+// broker close fails, the DB is NOT updated — prevents the orphaned-position
+// bug where the bot thinks it's flat but TopStep still holds the contracts.
+router.post('/close/:id', requireAuth, async (req, res) => {
+  const axios = require('axios');
   const db = getDb(false);
   if (!db) return res.status(503).json({ error: 'DB unavailable' });
 
@@ -197,7 +202,50 @@ router.post('/close/:id', requireAuth, (req, res) => {
     const trade = db.prepare("SELECT * FROM futures_trades WHERE id=? AND status='open'").get(req.params.id);
     if (!trade) return res.status(404).json({ error: 'Trade not found or already closed' });
 
-    // Get current price from latest market_status
+    const isLive = trade.order_id && trade.order_id !== 'SIM' && trade.order_id !== 'UNKNOWN';
+
+    // For live trades, close the real TopStep position FIRST
+    if (isLive) {
+      const getFs = (k) => {
+        try { const r = db.prepare("SELECT value FROM futures_settings WHERE key=?").get(k); return r ? r.value : ''; }
+        catch { return ''; }
+      };
+      const tsUser = getFs('topstep_username');
+      const tsKey  = getFs('topstep_api_key');
+      const tsAcct = parseInt(getFs('topstep_account_id'), 10);
+      if (!tsUser || !tsKey || !tsAcct) {
+        return res.status(500).json({ error: 'Live trade but TopStep credentials missing — cannot close at broker' });
+      }
+      try {
+        const BASE = 'https://api.topstepx.com';
+        const auth = await axios.post(`${BASE}/api/Auth/loginKey`, { userName: tsUser, apiKey: tsKey }, { timeout: 12000 });
+        const token = auth.data?.token || auth.data?.accessToken;
+        if (!token) return res.status(502).json({ error: 'TopStep auth failed during close' });
+        const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+        // Find the actual open position for this symbol (most robust — close exactly what's open)
+        const posResp = await axios.post(`${BASE}/api/Position/searchOpen`, { accountId: tsAcct }, { headers, timeout: 10000 });
+        const positions = posResp.data?.positions || posResp.data || [];
+        const match = positions.find(p => (p.contractDisplayName || '').toUpperCase().startsWith(trade.symbol.toUpperCase()));
+        if (!match) {
+          // Nothing open at TopStep for this symbol — broker is already flat; just sync the DB
+          console.warn(`[futures] close: no TopStep position for ${trade.symbol}, syncing DB only`);
+        } else {
+          const closeResp = await axios.post(`${BASE}/api/Position/closeContract`,
+            { accountId: tsAcct, contractId: match.contractId }, { headers, timeout: 10000 });
+          if (!closeResp.data?.success) {
+            return res.status(502).json({ error: `TopStep close failed: ${closeResp.data?.errorMessage || 'unknown'}` });
+          }
+        }
+      } catch (e) {
+        const msg = e.response?.data?.errorMessage || e.response?.data?.error || e.message;
+        console.error('[futures] TopStep close error:', msg);
+        // DO NOT mark closed in DB — position may still be open at broker
+        return res.status(502).json({ error: `Broker close failed (position may still be open): ${msg}` });
+      }
+    }
+
+    // Broker close succeeded (or was sim/already-flat) — now update the DB
     let currentPrice = null;
     try {
       const row = db.prepare("SELECT value FROM futures_settings WHERE key='market_status'").get();
@@ -207,7 +255,6 @@ router.post('/close/:id', requireAuth, (req, res) => {
         if (sym && sym.price) currentPrice = sym.price;
       }
     } catch (_) {}
-
     if (!currentPrice) currentPrice = trade.current_price || trade.entry_price;
 
     const pointValue = trade.symbol === 'NQ' ? 20 : 50;
@@ -225,7 +272,7 @@ router.post('/close/:id', requireAuth, (req, res) => {
       return res.status(409).json({ error: 'Trade already closed or DB conflict — try again' });
     }
 
-    res.json({ ok: true, price: currentPrice, pnl: pnlRounded });
+    res.json({ ok: true, price: currentPrice, pnl: pnlRounded, broker: isLive ? 'TopStep closed' : 'sim' });
   } catch (err) {
     console.error('[futures] close error:', err.message);
     res.status(500).json({ error: err.message });
