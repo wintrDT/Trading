@@ -359,68 +359,15 @@ def job_scan(client):
             direction = _check_reversion_entry(symbol, dev_pct, tuned_dev_long, tuned_dev_short)
 
             pending = _peak_dev.get(symbol)
-
-            # High-confidence override on bounce: if armed AND confidence for the pending
-            # direction is >= override threshold, skip the retrace wait and fire now.
-            # A 92 score shouldn't sit waiting for a 0.05% retrace that may never come.
             if direction is None and pending:
-                atr_now      = vol_state.atr()
-                atr_baseline = vol_state.atr_baseline()
-                atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
-                _bias = get_market_bias(FUTURES_DB_PATH, symbol)
-                pending_dir = pending['side']
-                pending_conf, _ = compute_confidence(
-                    direction=pending_dir, dev_pct=dev_pct,
-                    dev_threshold=tuned_dev_long if pending_dir == 'long' else tuned_dev_short,
-                    sma_trend=trend, day_type=_day_type_cache.get(symbol),
-                    rsi=rsi, atr_ratio=atr_ratio,
-                    near_event=news_state['state'] == 'near_event',
-                    bias_disagrees=bool(_bias and _bias != pending_dir),
-                )
-                override_threshold = RISK_RULES.get('confidence_override', 70)
-                if pending_conf >= override_threshold:
-                    log.info('%s %s — confidence %d >= %d, BYPASSING bounce confirmation',
-                             symbol, pending_dir, pending_conf, override_threshold)
-                    direction = pending_dir
-                    _peak_dev.pop(symbol, None)
-                    pending = None
-                else:
-                    blocked_by = f'pending {pending_dir} (peak {pending["peak"]:.3f}%, conf {pending_conf}<{override_threshold})'
+                blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
 
-            # Compute confidence FIRST so high-conviction setups can bypass
-            # the single-indicator filters below.
-            preview_confidence = None
-            if direction and dev_pct is not None:
-                atr_now      = vol_state.atr()
-                atr_baseline = vol_state.atr_baseline()
-                atr_ratio    = (atr_now / atr_baseline) if (atr_now and atr_baseline) else None
-                _bias = get_market_bias(FUTURES_DB_PATH, symbol)
-                preview_confidence, _ = compute_confidence(
-                    direction=direction,
-                    dev_pct=dev_pct,
-                    dev_threshold=tuned_dev_long if direction == 'long' else tuned_dev_short,
-                    sma_trend=trend,
-                    day_type=_day_type_cache.get(symbol),
-                    rsi=rsi,
-                    atr_ratio=atr_ratio,
-                    near_event=news_state['state'] == 'near_event',
-                    bias_disagrees=bool(_bias and _bias != direction),
-                )
-
-            override_threshold = RISK_RULES.get('confidence_override', 70)
-            confidence_override = (preview_confidence is not None
-                                    and preview_confidence >= override_threshold)
-
-            if confidence_override:
-                log.info('%s %s — confidence %d >= %d, BYPASSING indicator filters',
-                         symbol, direction, preview_confidence, override_threshold)
-            else:
-                # Day-type filter — block reversion entries on trend/gap days
-                dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
-                if direction and dt_block:
-                    log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
-                    blocked_by = dt_block
-                    direction = None
+            # Day-type filter — block reversion entries on trend/gap days (always applies, no override)
+            dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
+            if direction and dt_block:
+                log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
+                blocked_by = dt_block
+                direction = None
 
                 # Micro-momentum filter — catches the case where 20-bar SMA still says
                 # "up" but price has been falling for the last few bars.
@@ -499,14 +446,11 @@ def job_scan(client):
                                 else breakdown_short if scored_direction == 'short'
                                 else None)
 
-        # Hard gate: only block actual firing signals if below threshold
-        if signal:
-            min_conf = RISK_RULES.get('min_confidence', 60)
-            if confidence_score is not None and confidence_score < min_conf:
-                log.info('%s %s blocked by confidence %d < %d (%s)', symbol, signal,
-                         confidence_score, min_conf, confidence_breakdown)
-                blocked_by = f'confidence {confidence_score}/100 < {min_conf}'
-                signal, strategy = None, None
+        # Confidence is POLICY/DISPLAY only — it does NOT block trades.
+        # User decision (2026-05-19): go back to the simpler hard-filter flow
+        # that was working pre-confidence-gating. Confidence remains as a
+        # visualization metric on the dashboard so user can monitor setup
+        # quality, but doesn't gate entries.
 
         # Time-of-day block — applied last so the signal/blocked_by reflects the real reason
         if signal and hour_blocked:
