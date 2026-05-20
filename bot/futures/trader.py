@@ -55,13 +55,15 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         stop_ticks   = risk['stop_ticks']
         target_ticks = risk['target_ticks']
 
-    # ATR-adaptive stop: 3x average price move per bar, clamped to [0.5x, 2.5x] of the fixed-tick stop.
-    # On calm days -> tighter stop (less loss when hit). On wild days -> wider stop (survive noise).
+    # ATR-adaptive stop: 2.5x average price move per bar, clamped to [0.5x, 1.5x]
+    # of the fixed-tick stop. Tightened from 2.5x ceiling on 2026-05-19 after
+    # evening live trades stopped out at -$200/-$300 (wide ATR stops in volatile
+    # transition window). Smaller cap = smaller losses per stop-out.
     atr = signal.get('atr')
     if atr is not None and atr > 0:
-        atr_stop_ticks = round(atr * 3 / tick)
+        atr_stop_ticks = round(atr * 2.5 / tick)
         floor_ticks    = max(4, stop_ticks // 2)
-        ceiling_ticks  = stop_ticks * 2 + (stop_ticks // 2)  # 2.5x the fixed stop
+        ceiling_ticks  = int(stop_ticks * 1.5)  # was 2.5x, now 1.5x
         stop_ticks     = max(floor_ticks, min(ceiling_ticks, atr_stop_ticks))
 
     # News volatility engine — widen stop, tighten target when near a scheduled event

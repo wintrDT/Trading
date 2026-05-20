@@ -53,13 +53,15 @@ RISK_RULES = {
     'fast_fail_min_age_sec': 120,
     'fast_fail_max_neg_usd': -50.0,
     # Minimum confidence score 0-100 required to enter a trade.
-    'min_confidence': 60,
+    # Raised 60 -> 70 on 2026-05-19 after live-mode losses: 4 of 5 losing
+    # live trades had MFE <= 0 (never went green). Marginal-score trades
+    # were calling direction wrong from entry. Tighter floor cuts those.
+    'min_confidence': 70,
     # Override threshold — when confidence >= this value, single-indicator filters
-    # (SMA trend, day-type direction, micro-momentum) are bypassed. The setup is
-    # strong enough on the composite score that the individual gates would be
-    # over-filtering. Safety rails (news pause, hour block, cooldown, daily loss
-    # limit, max contracts) still apply regardless.
-    'confidence_override': 70,
+    # (SMA trend, day-type direction, micro-momentum) AND bounce confirmation
+    # are bypassed. Raised 75 -> 85 so override is genuinely rare; only
+    # the strongest composite setups skip the safety stack.
+    'confidence_override': 85,
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does
@@ -99,8 +101,14 @@ SYMBOL_RISK = {
 # were partly trail-bug victims, not bad-hour victims). Only 22-23 ET kept blocked —
 # at 22:00 the bot was direction-wrong 6/7 times (14% WR), which is regime, not trail.
 BLOCKED_HOURS_ET = {
-    'ES': {13, 22, 23},  # 13 added — lunch chop (-$445 yesterday, 38% WR)
-    'NQ': set(),
+    # Updated 2026-05-19 after 521-trade hourly audit.
+    # Removed 13 ET (was -$445 pre-trail-fix; full audit shows +$2,400 net, $49/trade).
+    # Added 7, 8 (pre-NY chop, -$1,272 combined), 16 (close chop, -$468),
+    #       19, 20 (evening transition, -$655 — caused tonight's live loss),
+    #       22, 23 (overnight transition, kept).
+    # KEEP TRADING: 9-15 ET (NY day), 21 ET (Asia open), 0-6 ET (overnight) — all profitable.
+    'ES': {7, 8, 16, 19, 20, 22, 23},
+    'NQ': {7, 8, 16, 19, 20, 22, 23},
 }
 
 TIMEZONE    = 'America/New_York'
