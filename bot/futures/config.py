@@ -66,11 +66,12 @@ RISK_RULES = {
     'trend_min_rsi_long':  45,    # skip trend LONG if RSI below this (weak/falling)
     'trend_max_rsi_short': 55,    # skip trend SHORT if RSI above this
     'trend_max_dev_pct':   0.15,  # skip trend entry if |price-VWAP| deviation exceeds this % (overextended)
-    # Reversion RSI sanity gate (added 2026-05-20 after a -$125 NQ short that entered
-    # at RSI 20.6 — an exhausted oversold flush — and bounced out in 5s). Reversion
-    # needs ROOM to revert: don't short an already-oversold move or long an overbought one.
-    'reversion_rsi_short_min': 40,  # skip reversion SHORT if RSI below this (oversold, bounce risk)
-    'reversion_rsi_long_max':  60,  # skip reversion LONG if RSI above this (overbought, top risk)
+    # Reversion RSI gate (revised 2026-05-20 from real data, not a single trade).
+    # Shorts get progressively worse as RSI rises: RSI 60-70 = -$69/trade,
+    # 70+ = -$36, while RSI <60 shorts are net positive. So block shorts only when
+    # RSI is high (fighting strong up-momentum). Longs are profitable across the RSI
+    # range (deep-oversold AND momentum-recovery), so they get NO RSI block.
+    'reversion_rsi_short_max': 60,  # skip reversion SHORT if RSI at/above this (up-momentum too strong)
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does

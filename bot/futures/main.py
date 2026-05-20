@@ -374,17 +374,12 @@ def job_scan(client):
             if direction is None and pending:
                 blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
 
-            # RSI sanity gate — reversion needs ROOM to revert, not an exhausted move.
-            # VWAP can read "extended" (price still above the lagging VWAP) while RSI
-            # shows the move already flushed. Don't SHORT an oversold flush (the RSI
-            # 20.6 NQ short on 2026-05-20 that bounced out in 5s) or LONG an overbought top.
-            if direction == 'short' and rsi is not None and rsi < RISK_RULES['reversion_rsi_short_min']:
-                blocked_by = f"RSI {rsi:.0f} < {RISK_RULES['reversion_rsi_short_min']} (oversold — short bounce risk)"
+            # RSI gate (data-driven): shorts lose when RSI is high (fighting strong
+            # up-momentum) — RSI 60-70 = -$69/trade, 70+ = -$36, while RSI <60 shorts
+            # are net positive. Longs profit across the RSI range, so no long block.
+            if direction == 'short' and rsi is not None and rsi >= RISK_RULES['reversion_rsi_short_max']:
+                blocked_by = f"RSI {rsi:.0f} >= {RISK_RULES['reversion_rsi_short_max']} (up-momentum too strong to short)"
                 log.info('%s short blocked — %s', symbol, blocked_by)
-                direction = None
-            elif direction == 'long' and rsi is not None and rsi > RISK_RULES['reversion_rsi_long_max']:
-                blocked_by = f"RSI {rsi:.0f} > {RISK_RULES['reversion_rsi_long_max']} (overbought — long top risk)"
-                log.info('%s long blocked — %s', symbol, blocked_by)
                 direction = None
 
             # Day-type filter — block reversion entries on trend/gap days
