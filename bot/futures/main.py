@@ -1,6 +1,6 @@
 # bot/futures/main.py
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from datetime import time as _Time
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -14,7 +14,7 @@ from bot.futures.config import (
     TOPSTEP_RULES,
 )
 from bot.futures.db import (
-    init_db, insert_signal, get_daily_pnl, get_setting, set_setting,
+    init_db, insert_signal, get_daily_pnl, get_daily_pnl_range, get_setting, set_setting,
     insert_snapshot, get_today_event_times,
 )
 from bot.futures.news import fetch_and_store_news
@@ -202,7 +202,15 @@ def job_scan(client):
         return
 
     today     = datetime.now(ET).strftime('%Y-%m-%d')
-    daily_pnl = get_daily_pnl(FUTURES_DB_PATH, today)
+    # Compute the UTC bounds of the current ET trading day so evening trades
+    # (which roll into the next UTC date) are counted correctly. Fixes the
+    # daily-limit undercount bug where close_ts (UTC) didn't match the ET date.
+    from datetime import timedelta as _td
+    _et_now      = datetime.now(ET)
+    _et_midnight = ET.localize(datetime(_et_now.year, _et_now.month, _et_now.day))
+    _start_utc   = _et_midnight.astimezone(timezone.utc).isoformat()
+    _end_utc     = (_et_midnight + _td(days=1)).astimezone(timezone.utc).isoformat()
+    daily_pnl    = get_daily_pnl_range(FUTURES_DB_PATH, _start_utc, _end_utc)
     if is_daily_loss_limit_hit(daily_pnl, RISK_RULES['daily_loss_limit']):
         log.warning('Daily loss limit hit ($%.2f) — skipping scan', daily_pnl)
         global _daily_loss_notified_date

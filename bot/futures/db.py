@@ -222,10 +222,27 @@ def insert_snapshot(db_path, snap):
 
 
 def get_daily_pnl(db_path, date_str):
+    """DEPRECATED string-prefix version — kept for callers that pass an ET date
+    but it mismatches UTC-stored close_ts after ~8 PM ET. Prefer
+    get_daily_pnl_range() with explicit UTC bounds."""
     with _conn(db_path) as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(pnl),0) as total FROM futures_trades WHERE status='closed' AND close_ts LIKE ?",
             (f"{date_str}%",)
+        ).fetchone()
+        return float(row['total'])
+
+
+def get_daily_pnl_range(db_path, start_utc_iso, end_utc_iso):
+    """Sum P&L for trades closed within a UTC datetime range [start, end).
+    Use this with the UTC bounds of the ET trading day so evening trades
+    (which roll to the next UTC date) are correctly counted — fixes the
+    daily-loss-limit undercount bug."""
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl),0) as total FROM futures_trades "
+            "WHERE status='closed' AND close_ts >= ? AND close_ts < ?",
+            (start_utc_iso, end_utc_iso)
         ).fetchone()
         return float(row['total'])
 
