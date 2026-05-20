@@ -85,39 +85,55 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         stop_ticks   = int(stop_ticks * 1.25)   # 25% wider stop (survive vol spike)
         target_ticks = max(4, int(target_ticks * 0.75))  # 25% closer target (take profit faster)
 
-    stop_price   = calc_stop_price(direction, price, stop_ticks, tick)
-
-    # Use VWAP as natural reversion target when available — snap to nearest tick
-    # Falls back to fixed ticks if VWAP is missing or doesn't give at least 1:1 R:R
-    vwap_val = signal.get('vwap')
-    target_price = calc_target_price(direction, price, target_ticks, tick)
-    if vwap_val and vwap_val > 0:
-        snapped = round(round(vwap_val / tick) * tick, 4)
-        stop_dist   = abs(stop_price - price)
-        target_dist = abs(snapped - price)
-        valid = (direction == 'long'  and snapped > price) or (direction == 'short' and snapped < price)
-        if valid and target_dist >= stop_dist:
-            target_price = snapped
-
-    order_id = 'SIM'
+    # Place the order FIRST (live), then read the ACTUAL fill price from TopStep
+    # so the recorded entry — and the stop/target derived from it — match reality
+    # instead of the signal-time quote. Sim mode keeps using the signal price.
+    order_id   = 'SIM'
+    entry_price = price
     if not sim:
         action = 'Buy' if direction == 'long' else 'Sell'
         try:
             resp     = client.place_order(symbol, action, contracts)
             order_id = str(resp.get('orderId', 'UNKNOWN'))
         except Exception:
-            # Broker order failed — do NOT record a trade. If it threw after a
-            # partial fill we'd rather have no DB record than a wrong one; the
-            # broker-position check on the next entry will catch any orphan.
             log.exception('Broker order FAILED for %s %s — no trade recorded', direction, symbol)
             notifier.notify_system(f'Order FAILED: {direction} {symbol} — check TopStep manually', level='error')
             return None
+        # Read the real fill price from the resulting position (averagePrice).
+        # Retry a few times — market orders fill fast but the position may take
+        # a moment to register.
+        if hasattr(client, 'get_open_position'):
+            import time as _time
+            for _ in range(4):
+                _time.sleep(0.3)
+                try:
+                    pos = client.get_open_position(symbol)
+                except Exception:
+                    pos = None
+                if pos and pos.get('avgPrice'):
+                    entry_price = float(pos['avgPrice'])
+                    break
+            if entry_price != price:
+                log.info('%s actual fill %.2f (signal was %.2f, slip %.2f)',
+                         symbol, entry_price, price, entry_price - price)
+
+    # Stop + target derived from the ACTUAL entry price
+    stop_price   = calc_stop_price(direction, entry_price, stop_ticks, tick)
+    vwap_val     = signal.get('vwap')
+    target_price = calc_target_price(direction, entry_price, target_ticks, tick)
+    if vwap_val and vwap_val > 0:
+        snapped     = round(round(vwap_val / tick) * tick, 4)
+        stop_dist   = abs(stop_price - entry_price)
+        target_dist = abs(snapped - entry_price)
+        valid = (direction == 'long'  and snapped > entry_price) or (direction == 'short' and snapped < entry_price)
+        if valid and target_dist >= stop_dist:
+            target_price = snapped
 
     trade_id = insert_trade(db_path, {
         'symbol':        symbol,
         'strategy':      signal['strategy'],
         'direction':     direction,
-        'entry_price':   price,
+        'entry_price':   entry_price,
         'entry_ts':      datetime.now(timezone.utc).isoformat(),
         'stop_price':    stop_price,
         'target_price':  target_price,
@@ -132,14 +148,14 @@ def place_entry(client, db_path, signal, contracts, sim=False):
             mark_signal_traded(db_path, signal_id)
         except ValueError:
             pass
-    stop_distance_ticks = round(abs(price - stop_price) / tick)
+    stop_distance_ticks = round(abs(entry_price - stop_price) / tick)
     log.info('Entry: %s %s %s @ %.2f stop=%.2f (%d ticks, ATR=%s) target=%.2f%s',
-             direction, symbol, signal['strategy'], price, stop_price,
+             direction, symbol, signal['strategy'], entry_price, stop_price,
              stop_distance_ticks,
              f'{atr:.3f}' if atr else 'n/a',
              target_price,
              ' [SIM]' if sim else '')
-    notifier.notify_entry(symbol, direction, price, stop_price, target_price, contracts, signal['strategy'])
+    notifier.notify_entry(symbol, direction, entry_price, stop_price, target_price, contracts, signal['strategy'])
     return trade_id
 
 
