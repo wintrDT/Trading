@@ -48,6 +48,8 @@ _vol_states:     dict = {}
 _peak_dev:       dict = {}   # symbol -> {'side': 'long'|'short', 'peak': dev_pct} — reversion confirmation
 _day_type_cache: dict = {}   # symbol -> classified day type, cleared on daily reset
 _last_price:     dict = {}   # symbol -> last scanned price (used for EOD session-close snapshot)
+_consec_below_vwap: dict = {}  # symbol -> count of consecutive scans price < VWAP (regime gate)
+_consec_above_vwap: dict = {}  # symbol -> count of consecutive scans price > VWAP
 _daily_loss_notified_date:   str = ''  # 'YYYY-MM-DD' — prevents duplicate daily-loss Telegram pings
 _daily_profit_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate profit-target Telegram pings
 
@@ -219,9 +221,10 @@ def job_scan(client):
             _daily_profit_notified_date = today
         return
 
-    if get_setting(FUTURES_DB_PATH, 'trading_paused', 'false') == 'true':
-        log.debug('Trading paused — skipping entries')
-        return
+    # NOTE: trading_paused is NOT checked here. It's checked at entry time so the
+    # dashboard still gets fresh market_status updates while paused — only NEW
+    # entries are blocked. See the place_entry call below.
+    trading_paused = get_setting(FUTURES_DB_PATH, 'trading_paused', 'false') == 'true'
 
     sim = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
 
@@ -302,6 +305,17 @@ def job_scan(client):
         vwap_pct = SYMBOL_VWAP_PCT.get(symbol, STRATEGY_PARAMS['vwap_deviation_pct'])
         dev_pct  = round((price - vwap) / vwap * 100, 4) if vwap else None
         trend    = ('up' if price > sma else 'down') if sma else None
+
+        # Persistent VWAP regime — counts consecutive scans price has been on each side.
+        # Hard block downstream: if price has been below VWAP for N+ scans, no longs;
+        # if above for N+ scans, no shorts. Faster + more reliable than SMA trend filter.
+        if dev_pct is not None:
+            if dev_pct < 0:
+                _consec_below_vwap[symbol] = _consec_below_vwap.get(symbol, 0) + 1
+                _consec_above_vwap[symbol] = 0
+            elif dev_pct > 0:
+                _consec_above_vwap[symbol] = _consec_above_vwap.get(symbol, 0) + 1
+                _consec_below_vwap[symbol] = 0
 
         # Adaptive threshold: use rolling volatility when available, else config default
         dynamic_threshold = vol_state.threshold() or vwap_pct
@@ -510,6 +524,8 @@ def job_scan(client):
             'sma':        round(sma, 2) if sma else None,
             'rsi':        round(rsi, 1) if rsi else None,
             'trend':      trend,
+            'consec_below_vwap': _consec_below_vwap.get(symbol, 0),
+            'consec_above_vwap': _consec_above_vwap.get(symbol, 0),
             'day_type':   _day_type_cache.get(symbol),
             'signal':     signal,
             'blocked_by': blocked_by,
@@ -557,6 +573,24 @@ def job_scan(client):
             contracts = max(1, contracts // 2)
             log.info('news bias (%s) disagrees with %s signal — halving size to %d for %s',
                      news_bias_for_symbol, signal, contracts, symbol)
+        if trading_paused:
+            log.info('Trading paused — skipping entry for %s %s', symbol, signal)
+            continue
+
+        # HARD REGIME GATE — confidence override does NOT bypass this.
+        # If price has been on the wrong side of VWAP for 6+ consecutive scans
+        # (= 1 minute at 10s scan), the "reversion" isn't a reversion — it's
+        # the new regime. Don't fight it.
+        PERSISTENT_REGIME_BARS = 6
+        if signal == 'long' and _consec_below_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
+            log.warning('%s long BLOCKED — price below VWAP for %d scans (persistent downtrend)',
+                        symbol, _consec_below_vwap[symbol])
+            continue
+        if signal == 'short' and _consec_above_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
+            log.warning('%s short BLOCKED — price above VWAP for %d scans (persistent uptrend)',
+                        symbol, _consec_above_vwap[symbol])
+            continue
+
         log.info('Signal: %s %s %s @ %.2f contracts=%d', strategy, signal, symbol, price, contracts)
         place_entry(client, FUTURES_DB_PATH, {
             'symbol': symbol, 'strategy': strategy,
