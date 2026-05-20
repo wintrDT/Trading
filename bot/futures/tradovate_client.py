@@ -45,12 +45,12 @@ class TradovateClient:
         payload = {
             'name':       self._username,
             'password':   self._password,
-            'deviceId':   self._device_id,
-            'appId':      'SharpBot',
+            'appId':      self._cid if self._cid else 'demo',
             'appVersion': '1.0',
-            'cid':        int(self._cid) if str(self._cid).isdigit() else 0,
-            'sec':        self._sec,
         }
+        if self._cid and str(self._cid).isdigit():
+            payload['cid'] = int(self._cid)
+            payload['sec'] = self._sec or ''
         resp = httpx.post(f'{self._base}/auth/accesstokenrequest', json=payload, timeout=15)
         resp.raise_for_status()
         data = resp.json()
@@ -165,9 +165,12 @@ class TradovateClient:
         """Returns {symbol: mid_price} for the given continuous symbols (e.g. 'ES', 'NQ')."""
         prices = {}
 
+        requested = set(symbols)
         def on_quote(q):
             sym  = q.get('symbol', '')
             base = ''.join(c for c in sym if c.isalpha())
+            if base not in requested:
+                return
             bid  = q.get('bid')
             ask  = q.get('ask')
             if bid and ask:

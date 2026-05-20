@@ -4,7 +4,8 @@
   "description": "Discord prediction market & parlay bot for NBA, NFL, MLB, NCAA",
   "main": "bot.js",
   "scripts": {
-    "start": "concurrently --names \"BOT,OPTIONS,FUTURES,TUNNEL\" --prefix-colors \"cyan,green,magenta,yellow\" \"node bot.js\" \"python -m bot.main\" \"python -m bot.futures.main\" \"cloudflared tunnel run kalshi-bot\"",
+    "prestart": "taskkill /F /IM python.exe /T 2>nul & exit /b 0",
+    "start": "concurrently --names \"BOT,OPTIONS,FUTURES,CRYPTO,TUNNEL\" --prefix-colors \"cyan,green,magenta,blue,yellow\" \"node bot.js\" \"python -m bot.main\" \"python -m bot.futures.main\" \"python -m bot.crypto.main\" \"cloudflared tunnel run kalshi-bot\"",
     "web": "node web/server.js",
     "bot": "node bot.js",
     "dev": "nodemon web/server.js",

@@ -11,7 +11,8 @@ from bot.futures.config import (
     FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
     TIMEZONE, MARKET_CLOSE_HOUR, MARKET_OPEN_HOUR, ORB_START, ORB_END,
     AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS, BLOCKED_HOURS_ET,
-    TOPSTEP_RULES,
+    TOPSTEP_RULES, SYMBOL_MAX_CONTRACTS,
+    ENABLE_TREND_STRATEGY, SHORT_DEV_MULTIPLIER, STRONG_TREND_DAY_TYPES,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_daily_pnl_range, get_setting, set_setting,
@@ -27,7 +28,6 @@ from bot.futures.strategy import (
     classify_day_type, day_type_blocks_direction, compute_confidence,
     micro_momentum_blocks, check_trend_pullback,
 )
-from bot.futures.risk import is_daily_loss_limit_hit
 from bot.futures.db import get_market_bias
 from bot.futures.trader import place_entry
 from bot.futures.manager import manage_futures_positions
@@ -50,16 +50,24 @@ _day_type_cache: dict = {}   # symbol -> classified day type, cleared on daily r
 _last_price:     dict = {}   # symbol -> last scanned price (used for EOD session-close snapshot)
 _consec_below_vwap: dict = {}  # symbol -> count of consecutive scans price < VWAP (regime gate)
 _consec_above_vwap: dict = {}  # symbol -> count of consecutive scans price > VWAP
-_daily_loss_notified_date:   str = ''  # 'YYYY-MM-DD' — prevents duplicate daily-loss Telegram pings
 _daily_profit_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate profit-target Telegram pings
+_dd_last_check_ts: float = 0.0   # epoch — throttles the live TopStep balance/canTrade poll
+_dd_halted:        bool  = False # cached: account locked or near the trailing-DD floor (halt this session)
+_dd_notified_date: str   = ''    # 'YYYY-MM-DD' — prevents duplicate drawdown-halt pings
 
 
-def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.25):
+def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0.25, retrace_cap_pct=0.10):
     """VWAP reversion with bounce confirmation.
 
     Tracks peak deviation while price is extended. Returns a direction only after
-    price has retraced `retrace` fraction back toward VWAP from the peak.
-    Avoids entering while a move is still accelerating away from VWAP.
+    price retraces back toward VWAP from the peak — by `retrace` fraction OR
+    `retrace_cap_pct` absolute deviation, whichever is SMALLER.
+
+    The absolute cap matters on big extensions: a 25%-of-peak retrace on a 0.88%
+    stretch needs a ~64pt NQ reversal just to confirm, so real ~30pt turns were
+    missed (2026-05-20). The cap lets it confirm after a reasonable pullback no
+    matter how far price stretched. For moderate deviations (peak < ~0.40%) the
+    percentage rule still binds first, so normal behavior is unchanged.
     """
     state = _peak_dev.get(symbol)
 
@@ -69,6 +77,11 @@ def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0
         _peak_dev.pop(symbol, None)
         state = None
 
+    def _confirmed(side, peak):
+        trigger  = min(retrace * abs(peak), retrace_cap_pct)
+        retraced = (dev_pct - peak) if side == 'long' else (peak - dev_pct)
+        return retraced >= trigger
+
     if dev_pct <= -thresh_long:
         if state is None or state['side'] != 'long':
             _peak_dev[symbol] = {'side': 'long', 'peak': dev_pct}
@@ -76,7 +89,7 @@ def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0
         if dev_pct < state['peak']:
             state['peak'] = dev_pct  # still extending — update peak, wait
             return None
-        if abs(dev_pct - state['peak']) / abs(state['peak']) >= retrace:
+        if _confirmed('long', state['peak']):
             _peak_dev.pop(symbol, None)
             return 'long'
         return None
@@ -88,19 +101,16 @@ def _check_reversion_entry(symbol, dev_pct, thresh_long, thresh_short, retrace=0
         if dev_pct > state['peak']:
             state['peak'] = dev_pct
             return None
-        if (state['peak'] - dev_pct) / state['peak'] >= retrace:
+        if _confirmed('short', state['peak']):
             _peak_dev.pop(symbol, None)
             return 'short'
         return None
 
-    # Inside threshold band but state pending — fire if bounce already crossed retrace target
-    if state:
-        if state['side'] == 'long' and abs(dev_pct - state['peak']) / abs(state['peak']) >= retrace:
-            _peak_dev.pop(symbol, None)
-            return 'long'
-        if state['side'] == 'short' and (state['peak'] - dev_pct) / state['peak'] >= retrace:
-            _peak_dev.pop(symbol, None)
-            return 'short'
+    # Inside threshold band but state pending — fire if bounce already crossed target
+    if state and _confirmed(state['side'], state['peak']):
+        d = state['side']
+        _peak_dev.pop(symbol, None)
+        return d
 
     return None
 
@@ -203,21 +213,13 @@ def job_scan(client):
 
     today     = datetime.now(ET).strftime('%Y-%m-%d')
     # Compute the UTC bounds of the current ET trading day so evening trades
-    # (which roll into the next UTC date) are counted correctly. Fixes the
-    # daily-limit undercount bug where close_ts (UTC) didn't match the ET date.
+    # (which roll into the next UTC date) are counted correctly.
     from datetime import timedelta as _td
     _et_now      = datetime.now(ET)
     _et_midnight = ET.localize(datetime(_et_now.year, _et_now.month, _et_now.day))
     _start_utc   = _et_midnight.astimezone(timezone.utc).isoformat()
     _end_utc     = (_et_midnight + _td(days=1)).astimezone(timezone.utc).isoformat()
     daily_pnl    = get_daily_pnl_range(FUTURES_DB_PATH, _start_utc, _end_utc)
-    if is_daily_loss_limit_hit(daily_pnl, RISK_RULES['daily_loss_limit']):
-        log.warning('Daily loss limit hit ($%.2f) — skipping scan', daily_pnl)
-        global _daily_loss_notified_date
-        if _daily_loss_notified_date != today:
-            notifier.notify_system(f'Daily loss limit hit (${daily_pnl:.2f}) — trading paused for the day', level='critical')
-            _daily_loss_notified_date = today
-        return
 
     # Daily profit target — lock in the day's gain, don't give it back
     profit_target = RISK_RULES.get('daily_profit_target', 0)
@@ -361,6 +363,8 @@ def job_scan(client):
         tuned_rsi_short = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_short_rsi', 60))
         tuned_dev_long  = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_long_dev',  dynamic_threshold))
         tuned_dev_short = float(get_setting(FUTURES_DB_PATH, f'tune_{sym_l}_short_dev', dynamic_threshold))
+        # Tighten shorts — require more deviation than longs (weaker short edge).
+        tuned_dev_short *= SHORT_DEV_MULTIPLIER
 
         if vwap is not None and dev_pct is not None:
             # Bounce-confirmed reversion: only enter after price retraces 25% from peak deviation
@@ -369,6 +373,19 @@ def job_scan(client):
             pending = _peak_dev.get(symbol)
             if direction is None and pending:
                 blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
+
+            # RSI sanity gate — reversion needs ROOM to revert, not an exhausted move.
+            # VWAP can read "extended" (price still above the lagging VWAP) while RSI
+            # shows the move already flushed. Don't SHORT an oversold flush (the RSI
+            # 20.6 NQ short on 2026-05-20 that bounced out in 5s) or LONG an overbought top.
+            if direction == 'short' and rsi is not None and rsi < RISK_RULES['reversion_rsi_short_min']:
+                blocked_by = f"RSI {rsi:.0f} < {RISK_RULES['reversion_rsi_short_min']} (oversold — short bounce risk)"
+                log.info('%s short blocked — %s', symbol, blocked_by)
+                direction = None
+            elif direction == 'long' and rsi is not None and rsi > RISK_RULES['reversion_rsi_long_max']:
+                blocked_by = f"RSI {rsi:.0f} > {RISK_RULES['reversion_rsi_long_max']} (overbought — long top risk)"
+                log.info('%s long blocked — %s', symbol, blocked_by)
+                direction = None
 
             # Day-type filter — block reversion entries on trend/gap days
             dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
@@ -400,17 +417,49 @@ def job_scan(client):
         # sustained one-directional regime, trade WITH the trend on a pullback.
         # Short the bounces in a downtrend, buy the dips in an uptrend. This is what
         # lets the bot participate on pure trend days when reversion sits frozen.
-        if signal is None and vwap is not None:
+        if signal is None and vwap is not None and ENABLE_TREND_STRATEGY:
             tf_dir = check_trend_pullback(
                 channel_state,
                 _consec_below_vwap.get(symbol, 0),
                 _consec_above_vwap.get(symbol, 0),
             )
             if tf_dir:
-                signal, strategy = tf_dir, 'trend'
-                blocked_by = None
-                log.info('%s trend-pullback %s — regime below=%d above=%d',
-                         symbol, tf_dir, _consec_below_vwap.get(symbol, 0), _consec_above_vwap.get(symbol, 0))
+                # Entry-quality gates for the trend-pullback strategy (the source of
+                # the 2026-05-20 trend losses). Each rejects a bad-entry class seen
+                # in the data; checked in order, first failure blocks.
+                tf_block = None
+                # 1) SMA trend must confirm. The VWAP-streak regime lags badly (VWAP is
+                #    a session-cumulative average), so price can sit "above VWAP" while
+                #    falling hard — the falling-knife longs (NQ 29168 -> 29090).
+                if tf_dir == 'long' and trend == 'down':
+                    tf_block = 'SMA trend down'
+                elif tf_dir == 'short' and trend == 'up':
+                    tf_block = 'SMA trend up'
+                # 2) RSI momentum must be healthy. Losing "uptrend" longs had RSI
+                #    19/32/34/36 — that's a collapse, not a pullback.
+                elif tf_dir == 'long' and rsi is not None and rsi < RISK_RULES['trend_min_rsi_long']:
+                    tf_block = f'RSI {rsi:.0f} < {RISK_RULES["trend_min_rsi_long"]} (weak long)'
+                elif tf_dir == 'short' and rsi is not None and rsi > RISK_RULES['trend_max_rsi_short']:
+                    tf_block = f'RSI {rsi:.0f} > {RISK_RULES["trend_max_rsi_short"]} (weak short)'
+                # 3) Don't chase extension. The biggest losses came from high deviation
+                #    from VWAP (dev 0.27-0.39%) = entering after an expansion candle.
+                elif dev_pct is not None and abs(dev_pct) > RISK_RULES['trend_max_dev_pct']:
+                    tf_block = f'dev {abs(dev_pct):.2f}% > {RISK_RULES["trend_max_dev_pct"]}% (overextended)'
+                # 4) Price must be on the correct side of VWAP for the trade direction.
+                elif tf_dir == 'long' and price <= vwap:
+                    tf_block = 'price <= VWAP'
+                elif tf_dir == 'short' and price >= vwap:
+                    tf_block = 'price >= VWAP'
+
+                if tf_block:
+                    blocked_by = f'trend-pullback {tf_dir} blocked — {tf_block}'
+                    log.info('%s %s', symbol, blocked_by)
+                else:
+                    signal, strategy = tf_dir, 'trend'
+                    blocked_by = None
+                    log.info('%s trend-pullback %s — regime below=%d above=%d sma=%s rsi=%.0f dev=%.2f',
+                             symbol, tf_dir, _consec_below_vwap.get(symbol, 0),
+                             _consec_above_vwap.get(symbol, 0), trend, rsi or 0, dev_pct or 0)
 
         orb_dir = check_orb_signal(price, orb_state, orb_end_min,
                                     STRATEGY_PARAMS['orb_min_range_ticks'], tick)
@@ -529,6 +578,12 @@ def job_scan(client):
         elif _dt == 'low_vol_chop':
             contracts = 1
             log.info('low_vol_chop regime — flooring size to 1 for %s', contracts)
+        elif _dt in STRONG_TREND_DAY_TYPES:
+            # Reversion has little edge on a strong-trend day — keep participation
+            # minimal rather than forcing normal size into a non-reverting market.
+            contracts = 1
+            log.info('%s strong-trend day (%s) — flooring reversion size to 1 for %s',
+                     symbol, _dt, symbol)
         # News regime sizing: near a scheduled event = half size + wider stop + tighter target
         bias_disagrees = bool(news_bias_for_symbol and news_bias_for_symbol != signal)
         if news_state['state'] == 'near_event':
@@ -539,23 +594,32 @@ def job_scan(client):
             contracts = max(1, contracts // 2)
             log.info('news bias (%s) disagrees with %s signal — halving size to %d for %s',
                      news_bias_for_symbol, signal, contracts, symbol)
+        # Per-symbol exposure cap — NQ moves more points per bar than ES, so cap it
+        # at 1 contract to halve its swing (user kept NQ enabled, just smaller).
+        sym_max = SYMBOL_MAX_CONTRACTS.get(symbol)
+        if sym_max is not None and contracts > sym_max:
+            log.info('%s size capped %d -> %d (per-symbol limit)', symbol, contracts, sym_max)
+            contracts = sym_max
+
         if trading_paused:
             log.info('Trading paused — skipping entry for %s %s', symbol, signal)
             continue
 
-        # HARD REGIME GATE — confidence override does NOT bypass this.
-        # If price has been on the wrong side of VWAP for 6+ consecutive scans
-        # (= 1 minute at 10s scan), the "reversion" isn't a reversion — it's
-        # the new regime. Don't fight it.
+        # PERSISTENT REGIME GATE — blocks fighting a sustained one-sided move.
+        # EXEMPT the reversion ('vwap') strategy: its bounce confirmation already
+        # proves price stretched then turned back, so the gate shouldn't also veto
+        # it — otherwise the bot can never short a real reversal in an uptrend (the
+        # missed-winner watched on 2026-05-20). The gate still guards other strategies.
         PERSISTENT_REGIME_BARS = 6
-        if signal == 'long' and _consec_below_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
-            log.warning('%s long BLOCKED — price below VWAP for %d scans (persistent downtrend)',
-                        symbol, _consec_below_vwap[symbol])
-            continue
-        if signal == 'short' and _consec_above_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
-            log.warning('%s short BLOCKED — price above VWAP for %d scans (persistent uptrend)',
-                        symbol, _consec_above_vwap[symbol])
-            continue
+        if strategy != 'vwap':
+            if signal == 'long' and _consec_below_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
+                log.warning('%s long BLOCKED — price below VWAP for %d scans (persistent downtrend)',
+                            symbol, _consec_below_vwap[symbol])
+                continue
+            if signal == 'short' and _consec_above_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
+                log.warning('%s short BLOCKED — price above VWAP for %d scans (persistent uptrend)',
+                            symbol, _consec_above_vwap[symbol])
+                continue
 
         log.info('Signal: %s %s %s @ %.2f contracts=%d', strategy, signal, symbol, price, contracts)
         place_entry(client, FUTURES_DB_PATH, {

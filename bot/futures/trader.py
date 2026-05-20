@@ -129,6 +129,21 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         if valid and target_dist >= stop_dist:
             target_price = snapped
 
+    # Protective server-side STOP at the broker. The synthetic stop (manager polls
+    # every 5s and sends a market close) can't contain a fast move — NQ blew 8pts
+    # past a 3pt stop on 2026-05-20 (-$450). A resting stop fills at the broker the
+    # instant price trips it, capping the loss near the real stop level. Best-effort:
+    # if it fails we still have the synthetic stop, so the entry is not aborted.
+    stop_order_id = None
+    if not sim and hasattr(client, 'place_stop_order'):
+        close_action = 'Sell' if direction == 'long' else 'Buy'
+        try:
+            stop_resp     = client.place_stop_order(symbol, close_action, contracts, stop_price)
+            stop_order_id = stop_resp.get('orderId')
+            log.info('%s protective stop placed @ %.2f (order %s)', symbol, stop_price, stop_order_id)
+        except Exception:
+            log.exception('%s protective stop FAILED to place — relying on synthetic stop only', symbol)
+
     trade_id = insert_trade(db_path, {
         'symbol':        symbol,
         'strategy':      signal['strategy'],
@@ -142,6 +157,7 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         'status':        'open',
         'entry_rsi':     signal.get('entry_rsi'),
         'entry_dev_pct': signal.get('entry_dev_pct'),
+        'stop_order_id': stop_order_id,
     })
     if signal_id:
         try:
@@ -164,11 +180,22 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
     point_value = tick_data['point_value']
     pnl         = calc_pnl(trade['direction'], trade['entry_price'], current_price,
                            trade['contracts'], point_value)
+    close_price = current_price
 
     if not sim and trade.get('order_id') not in ('SIM', 'UNKNOWN', None):
         # Prefer flatten (closeContract) — guarantees the position is fully closed
         # at the broker even if DB size != broker size. Falls back to a netting
         # market order for clients that don't expose close_position (e.g. Tastytrade).
+        close_req_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        # Cancel the resting protective stop FIRST. If we flatten while it's still
+        # working, a long's sell-stop (sitting below market) could later fill and
+        # open a brand-new short. Cancel is benign if the stop already filled.
+        if hasattr(client, 'cancel_order') and trade.get('stop_order_id'):
+            try:
+                client.cancel_order(trade['stop_order_id'])
+            except Exception:
+                log.exception('Failed to cancel protective stop %s for trade id=%s',
+                              trade.get('stop_order_id'), trade['id'])
         try:
             if hasattr(client, 'close_position'):
                 client.close_position(trade['symbol'])
@@ -180,10 +207,27 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
                           trade['symbol'], trade['id'])
             return  # do NOT mark closed — manager will retry next cycle
 
+        # Read the ACTUAL closing fill from TopStep — exit price slips past the
+        # quote that tripped the exit, and TopStep's realized P&L is authoritative.
+        # Fall back to the local estimate if the fill can't be read.
+        if hasattr(client, 'get_close_fill'):
+            try:
+                fill = client.get_close_fill(trade['symbol'], close_req_iso)
+            except Exception:
+                fill = None
+            if fill:
+                close_price = fill['price']
+                pnl         = fill['pnl']
+                log.info('%s actual close fill %.2f pnl=$%.2f (quote was %.2f, est pnl=$%.2f, fees=$%.2f)',
+                         trade['symbol'], close_price, pnl, current_price,
+                         calc_pnl(trade['direction'], trade['entry_price'], current_price,
+                                  trade['contracts'], point_value),
+                         fill.get('fees', 0.0))
+
     try:
         update_trade_closed(
             db_path, trade['id'],
-            close_price=current_price,
+            close_price=close_price,
             close_reason=reason,
             close_ts=datetime.now(timezone.utc).isoformat(),
             pnl=pnl,
@@ -194,6 +238,6 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
         return
 
     log.info('Closed: %s %s reason=%s price=%.2f pnl=%.2f',
-             trade['direction'], trade['symbol'], reason, current_price, pnl)
+             trade['direction'], trade['symbol'], reason, close_price, pnl)
     notifier.notify_exit(trade['symbol'], trade['direction'], pnl, reason,
-                         float(trade['entry_price']), float(current_price))
+                         float(trade['entry_price']), float(close_price))

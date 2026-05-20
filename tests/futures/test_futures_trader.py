@@ -25,10 +25,15 @@ def test_place_entry_sim_inserts_trade(tmp_db):
 def test_place_entry_live_calls_api(tmp_db):
     client = MagicMock()
     client.place_order.return_value = {'orderId': 99, 'orderStatus': 'Filled'}
+    client.get_open_position.return_value = None          # no existing broker position
+    client.place_stop_order.return_value = {'orderId': 123}  # protective stop placed
     signal = {'symbol': 'ES', 'strategy': 'orb', 'direction': 'short', 'price': 5010.0, 'signal_id': 1}
     trade_id = place_entry(client, tmp_db, signal, contracts=1, sim=False)
     client.place_order.assert_called_once()
+    client.place_stop_order.assert_called_once()          # broker-side stop is placed on entry
     assert trade_id is not None
+    trades = get_open_trades(tmp_db)
+    assert trades[0]['stop_order_id'] == '123'
 
 def test_no_duplicate_entry(tmp_db):
     client = MagicMock()

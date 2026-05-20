@@ -80,8 +80,12 @@ def should_exit(direction: str, current_price: float, stop_price: float, target_
 
 
 def calc_trailing_stop(direction: str, entry: float, current_price: float,
-                        tick: float, trigger_ticks: int = 8, trail_ticks: int = 4) -> float | None:
-    """Once price moves trigger_ticks in our favor, trail stop trail_ticks behind current price."""
+                        tick: float, trigger_ticks: int = 12, trail_ticks: int = 8) -> float | None:
+    """Once price moves trigger_ticks in our favor, trail stop trail_ticks behind current price.
+
+    Trail is kept wider than the typical 1-2pt noise band so a normal pullback
+    doesn't shake the trade out before the move develops.
+    """
     trigger = trigger_ticks * tick
     trail   = trail_ticks * tick
     if direction == 'long' and current_price >= entry + trigger:
@@ -92,14 +96,18 @@ def calc_trailing_stop(direction: str, entry: float, current_price: float,
 
 
 def calc_breakeven_stop(direction: str, entry: float, current_price: float,
-                         target_price: float, trigger_pct: float = 0.25) -> float | None:
-    """Once price reaches trigger_pct of target, return a breakeven stop price."""
-    if direction == 'long':
-        trigger = entry + (target_price - entry) * trigger_pct
-        if current_price >= trigger:
-            return entry
-    else:
-        trigger = entry - (entry - target_price) * trigger_pct
-        if current_price <= trigger:
-            return entry
+                         tick: float, trigger_ticks: int = 10, lock_ticks: int = 2) -> float | None:
+    """Once price moves trigger_ticks in our favor, lock a small profit (lock_ticks past entry).
+
+    Trigger is measured in ticks (not % of target) and sits above the noise band,
+    so a 1-2pt wiggle no longer snaps the stop to entry and scratches the trade.
+    Locking lock_ticks past entry means a breakeven stop-out is a tiny win that
+    covers fees rather than a flat scratch.
+    """
+    trigger = trigger_ticks * tick
+    lock    = lock_ticks * tick
+    if direction == 'long' and current_price >= entry + trigger:
+        return round(entry + lock, 4)
+    if direction == 'short' and current_price <= entry - trigger:
+        return round(entry - lock, 4)
     return None

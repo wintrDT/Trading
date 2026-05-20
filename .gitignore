@@ -1,0 +1,19 @@
+node_modules/
+.env
+*.log
+
+# Local data files — Railway creates these fresh on first boot
+data/*.db
+data/*.json
+
+# Databases — contain API keys, credentials & account IDs. NEVER commit these.
+*.db
+*.db-wal
+*.db-shm
+bot/data/*.db
+bot/data/*.json
+__pycache__/
+*.pyc
+
+# Local Claude Code config / plans
+.claude/

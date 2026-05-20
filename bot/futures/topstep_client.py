@@ -200,6 +200,7 @@ _TOPSTEPX_SEARCH = {
 
 # TopstepX order type / side enums (from swagger schema)
 _ORDER_TYPE_MARKET = 2     # 1=Limit, 2=Market, 3=Stop, 4=TrailingStop
+_ORDER_TYPE_STOP   = 3     # resting stop-market order (server-side protective stop)
 _ORDER_SIDE_BUY  = 0       # Bid (buyer)
 _ORDER_SIDE_SELL = 1       # Ask (seller)
 
@@ -491,8 +492,13 @@ class TopstepXClient:
                         payload = resp.json()
                         bars = payload.get('bars', []) if isinstance(payload, dict) else payload
                         if bars:
-                            out[symbol] = float(bars[-1]['close'])
-                            break  # got data, stop trying other live_flag
+                            last = bars[-1]
+                            # TopStep bars use single-letter keys (t/o/h/l/c/v).
+                            # Accept 'close' too in case the schema changes.
+                            close = last.get('c', last.get('close'))
+                            if close is not None:
+                                out[symbol] = float(close)
+                                break  # got data, stop trying other live_flag
                 except Exception:
                     log.exception('TopstepX REST price fetch failed for %s (live=%s)', symbol, live_flag)
                     continue
@@ -534,6 +540,64 @@ class TopstepXClient:
             if not order_id:
                 raise RuntimeError(f'TopstepX order placed but no orderId in response: {data}')
             return {'orderId': str(order_id)}
+
+    def place_stop_order(self, symbol: str, action: str, contracts: int, stop_price: float) -> dict:
+        """Place a resting server-side STOP order (the protective backstop).
+
+        action is the CLOSING side: 'Sell' to protect a long, 'Buy' to protect a short.
+        Fills at the broker the instant price trips stop_price — caps fast-move losses
+        that the 5s synthetic-stop poll can't catch.
+        """
+        if not self._connected:
+            raise RuntimeError('TopstepX not connected')
+        self._ensure_token()
+        contract_id = self._contracts.get(symbol)
+        if not contract_id:
+            raise RuntimeError(f'TopstepX: no resolved contract for {symbol}')
+        side = _ORDER_SIDE_BUY if action == 'Buy' else _ORDER_SIDE_SELL
+        with self._lock:
+            resp = self._http.post('/api/Order/place', json={
+                'accountId':  self.account_id,
+                'contractId': contract_id,
+                'type':       _ORDER_TYPE_STOP,
+                'side':       side,
+                'size':       int(contracts),
+                'stopPrice':  round(float(stop_price), 2),
+            })
+            if resp.status_code != 200:
+                raise RuntimeError(f'/api/Order/place (stop) HTTP {resp.status_code}: {resp.text[:300]}')
+            data = resp.json()
+            if data.get('success') is False:
+                raise RuntimeError(f'TopstepX stop order rejected: {data.get("errorMessage") or data.get("error")}')
+            order_id = data.get('orderId') or data.get('id') or data.get('order', {}).get('id')
+            if not order_id:
+                raise RuntimeError(f'TopstepX stop order placed but no orderId in response: {data}')
+            return {'orderId': str(order_id)}
+
+    def cancel_order(self, order_id) -> bool:
+        """Cancel a working order (e.g. the resting protective stop) by id.
+
+        Returns True on success or if the order is already gone (filled/cancelled).
+        """
+        if not self._connected or not order_id:
+            return False
+        self._ensure_token()
+        try:
+            with self._lock:
+                resp = self._http.post('/api/Order/cancel',
+                                       json={'accountId': self.account_id, 'orderId': int(order_id)})
+            if resp.status_code != 200:
+                # Already filled/cancelled is benign — the order is gone either way
+                log.info('TopstepX cancel_order %s -> HTTP %s (likely already gone)', order_id, resp.status_code)
+                return False
+            data = resp.json()
+            if data.get('success') is False:
+                log.info('TopstepX cancel_order %s -> %s (likely already gone)', order_id, data.get('errorMessage'))
+                return False
+            return True
+        except Exception:
+            log.exception('TopstepX cancel_order %s failed', order_id)
+            return False
 
     # ------------------------------------------------------------------ #
     # Position management — flatten + reconciliation
@@ -604,6 +668,52 @@ class TopstepXClient:
                     return True
                 raise RuntimeError(f'closeContract rejected: {data.get("errorMessage")}')
             return True
+
+    def get_close_fill(self, symbol: str, since_iso: str, retries: int = 5, delay: float = 0.4) -> dict | None:
+        """Read the ACTUAL closing fill(s) for `symbol` from TopStep after a close.
+
+        Lets us record the broker's real exit price + realized P&L instead of the
+        live quote that tripped the exit (which slips on the market fill). Closing
+        fills carry a non-null profitAndLoss; opening fills report null.
+
+        Returns {'price', 'pnl', 'fees', 'size'} or None if nothing found.
+        """
+        if not self._connected:
+            return None
+        contract_id = self._contracts.get(symbol)
+        if not contract_id:
+            return None
+        self._ensure_token()
+        import time as _time
+        for _ in range(retries):
+            _time.sleep(delay)
+            end = datetime.now(timezone.utc) + timedelta(seconds=5)
+            try:
+                with self._lock:
+                    resp = self._http.post('/api/Trade/search', json={
+                        'accountId':      self.account_id,
+                        'startTimestamp': since_iso,
+                        'endTimestamp':   end.isoformat().replace('+00:00', 'Z'),
+                    })
+                if resp.status_code != 200:
+                    continue
+                payload = resp.json()
+                trades = payload.get('trades', []) if isinstance(payload, dict) else payload
+            except Exception:
+                log.exception('TopstepX Trade/search failed for %s', symbol)
+                continue
+            fills = [t for t in trades
+                     if str(t.get('contractId')) == contract_id
+                     and t.get('profitAndLoss') is not None
+                     and not t.get('voided')]
+            total = sum(int(f.get('size', 0)) for f in fills)
+            if total <= 0:
+                continue
+            price = sum(float(f['price']) * int(f.get('size', 0)) for f in fills) / total
+            pnl   = sum(float(f.get('profitAndLoss') or 0) for f in fills)
+            fees  = sum(float(f.get('fees') or 0) + float(f.get('commissions') or 0) for f in fills)
+            return {'price': round(price, 4), 'pnl': pnl, 'fees': fees, 'size': total}
+        return None
 
     # ------------------------------------------------------------------ #
     # Diagnostics — for "Test Connection" button in settings

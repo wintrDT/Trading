@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Market Browser — Sharp Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=6">
+  <style>
+    .market-filters { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .market-filters input, .market-filters select {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+    .market-filters input:focus, .market-filters select:focus { border-color: var(--primary); }
+    .market-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+      transition: border-color 0.15s;
+    }
+    .market-card:hover { border-color: var(--primary); }
+    .market-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; }
+    .market-ticker { font-size: 11px; color: var(--muted); font-family: monospace; background: var(--border); padding: 2px 6px; border-radius: 4px; }
+    .market-title { font-size: 13px; color: var(--text); margin: 0.4rem 0; line-height: 1.4; }
+    .market-meta { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+    .market-meta span { display: flex; align-items: center; gap: 4px; }
+    .price-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .price-badge.yes { background: rgba(46,204,113,0.2); color: var(--green); }
+    .price-badge.no { background: rgba(231,76,60,0.2); color: var(--red); }
+    .tier-indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .tier-indicator.safe { background: var(--green); }
+    .tier-indicator.medium { background: var(--yellow); }
+    .tier-indicator.high { background: var(--red); }
+    .pagination { display: flex; justify-content: center; gap: 0.5rem; margin-top: 1rem; }
+    .pagination button {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .pagination button:hover { border-color: var(--primary); }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/markets" class="active">Markets</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h2>Market Browser</h2>
+      <span class="badge"><%= totalCount %> markets</span>
+    </div>
+
+    <div class="card">
+      <form class="market-filters" method="GET" action="/markets" style="margin-bottom:0">
+        <input type="text" name="q" placeholder="Search markets..." value="<%= query %>" style="min-width:200px">
+        <select name="sport">
+          <option value="">All Sports</option>
+          <option value="nba" <%= selectedSport === 'nba' ? 'selected' : '' %>>NBA</option>
+          <option value="nfl" <%= selectedSport === 'nfl' ? 'selected' : '' %>>NFL</option>
+          <option value="mlb" <%= selectedSport === 'mlb' ? 'selected' : '' %>>MLB</option>
+          <option value="nhl" <%= selectedSport === 'nhl' ? 'selected' : '' %>>NHL</option>
+        </select>
+        <select name="tier">
+          <option value="">All Tiers</option>
+          <option value="safe" <%= selectedTier === 'safe' ? 'selected' : '' %>>🛡️ Safe (70-90%)</option>
+          <option value="medium" <%= selectedTier === 'medium' ? 'selected' : '' %>>⚡ Medium (50-70%)</option>
+          <option value="high" <%= selectedTier === 'high' ? 'selected' : '' %>>🔥 High Risk (20-50%)</option>
+        </select>
+        <button type="submit" class="btn-primary btn-sm" style="width:auto;padding:8px 16px">Filter</button>
+        <% if (query || selectedSport || selectedTier) { %>
+          <a href="/markets" class="btn-secondary btn-sm" style="text-decoration:none;padding:8px 16px;display:inline-block">Clear</a>
+        <% } %>
+      </form>
+    </div>
+
+    <div id="marketsList">
+      <% if (markets.length === 0) { %>
+        <div class="card">
+          <p class="empty">No markets found. Try adjusting your filters.</p>
+        </div>
+      <% } else { %>
+        <% for (const m of markets) { %>
+          <div class="market-card">
+            <div class="market-header">
+              <span class="market-ticker"><%= m.ticker %></span>
+              <% if (m._tier) { %>
+                <span>
+                  <span class="tier-indicator <%= m._tier %>"></span>
+                  <span class="tier-badge"><%= m._tier %></span>
+                </span>
+              <% } %>
+            </div>
+            <div class="market-title"><%= m.title || m.no_sub_title %></div>
+            <div class="market-meta">
+              <% if (m._yesPrice != null) { %>
+                <span>
+                  <span class="price-badge <%= m._side %>">
+                    <%= m._side === 'yes' ? 'YES' : 'NO' %> <%= m._sideProb %>¢
+                  </span>
+                </span>
+                <span>Vol: <%= parseInt(m.volume_24h_fp || 0).toLocaleString() %></span>
+                <span>OI: <%= parseInt(m.open_interest_fp || 0).toLocaleString() %></span>
+              <% } else { %>
+                <span>No price available</span>
+              <% } %>
+              <% if (m.close_time) { %>
+                <span>Closes: <%= new Date(m.close_time).toLocaleDateString() %></span>
+              <% } %>
+            </div>
+          </div>
+        <% } %>
+      <% } %>
+    </div>
+  </main>
+</body>
+</html>

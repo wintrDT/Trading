@@ -47,7 +47,7 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
             update_trade_extremes(db_path, trade['id'], new_fav, new_adv)
 
         # Best stop = highest of original, breakeven, and trailing (for longs; lowest for shorts)
-        be_stop   = calc_breakeven_stop(direction, entry, current_price, target)
+        be_stop   = calc_breakeven_stop(direction, entry, current_price, tick)
         trail_stop = calc_trailing_stop(direction, entry, current_price, tick)
 
         new_stop = stop

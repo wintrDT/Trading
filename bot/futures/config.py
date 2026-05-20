@@ -11,7 +11,6 @@ SYMBOLS = ['ES', 'NQ']
 TICK_INFO = {
     'ES': {'tick': 0.25, 'tick_value': 12.50, 'point_value':  50.0},
     'NQ': {'tick': 0.25, 'tick_value':  5.00, 'point_value':  20.0},
-    'GC': {'tick': 0.10, 'tick_value': 10.00, 'point_value': 100.0},
 }
 
 STRATEGY_PARAMS = {
@@ -41,11 +40,10 @@ RISK_RULES = {
     'stop_ticks': 8,
     'target_ticks': 16,
     'max_contracts': 2,
-    'daily_loss_limit': 2000.0,    # bot stops trading for the day at -$2000
-    'daily_profit_target': 3000.0,  # TopStep $50k Combine profit target — bot stops trading at +$3000 (Combine pass)
+    'daily_profit_target': 3000.0,  # bank the day if +$3000 realized — don't give a big day back
     'news_blackout_minutes': 5,
     'trade_timeout_minutes': 30,
-    'cooldown_minutes': 1,
+    'cooldown_minutes': 2,  # base re-entry wait per symbol (x3 after a stop_loss) — cuts churn/fees
     # Fast-fail filter: if a trade is older than X seconds AND has NEVER shown
     # positive MFE AND is currently >$Y underwater, close it early. Yesterday's
     # data showed winners have avg MAE -$9 while losers have avg MAE -$262.
@@ -62,6 +60,17 @@ RISK_RULES = {
     # are bypassed. Raised 75 -> 85 so override is genuinely rare; only
     # the strongest composite setups skip the safety stack.
     'confidence_override': 85,
+    # Trend-pullback entry-quality gates (added 2026-05-20 after a string of trend
+    # losses). A real uptrend pullback has healthy momentum and isn't overextended;
+    # the losers had RSI 19/32/34/36 and dev 0.27-0.39% (collapses, not dips).
+    'trend_min_rsi_long':  45,    # skip trend LONG if RSI below this (weak/falling)
+    'trend_max_rsi_short': 55,    # skip trend SHORT if RSI above this
+    'trend_max_dev_pct':   0.15,  # skip trend entry if |price-VWAP| deviation exceeds this % (overextended)
+    # Reversion RSI sanity gate (added 2026-05-20 after a -$125 NQ short that entered
+    # at RSI 20.6 — an exhausted oversold flush — and bounced out in 5s). Reversion
+    # needs ROOM to revert: don't short an already-oversold move or long an overbought one.
+    'reversion_rsi_short_min': 40,  # skip reversion SHORT if RSI below this (oversold, bounce risk)
+    'reversion_rsi_long_max':  60,  # skip reversion LONG if RSI above this (overbought, top risk)
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does
@@ -73,13 +82,39 @@ RISK_RULES = {
 #   $100k Combine: max 10 contracts, daily loss $2,000, trailing DD $3,000
 #   $150k Combine: max 15 contracts, daily loss $3,000, trailing DD $4,500
 TOPSTEP_RULES = {
-    'plan':              '50k',     # active plan — '50k' / '100k' / '150k'
-    'max_contracts':     2,         # hard cap (start small, well under plan's 5)
-    'daily_loss_limit':  2000.0,    # bot stops trading for the day at -$2000
-    'trailing_drawdown': 2000.0,    # TopStep $50k plan max loss (trailing) — match exactly
-    'eod_flat_hour_et':  16,        # close all positions at 4:00 PM ET (TopStep cutoff is 4:10 PM ET / 3:10 PM CT)
-    'eod_flat_minute':   0,
+    'plan':                '50k-V2',   # active plan — 50k V2 Combine
+    'max_contracts':       2,          # hard cap (start small, well under plan's 5)
+    'start_balance':       50000.0,    # Combine starting balance (for trailing-floor + profit-target math)
+    'trailing_drawdown':   2000.0,     # 50k V2 max loss (trailing from peak) — HARD account-kill limit
+    'trailing_halt_buffer': 400.0,     # halt this far BEFORE the floor so we never actually breach
+    'profit_target_total': 3000.0,     # Combine passes at +$3000 from start (balance >= $53000) — halt to lock the pass
+    'eod_flat_hour_et':    16,         # close all positions at 4:00 PM ET (TopStep cutoff is 4:10 PM ET / 3:10 PM CT)
+    'eod_flat_minute':     0,
 }
+
+# Per-symbol max contracts. NQ moves more points per bar than ES, so the same
+# contract count produces larger swings — losses AND wins. Cap NQ at 1 to halve
+# its exposure while keeping it trading (user: "dont disable nq"). Symbols not
+# listed use the global RISK_RULES/TOPSTEP_RULES max_contracts.
+SYMBOL_MAX_CONTRACTS = {
+    'NQ': 1,
+}
+
+# QUARANTINED 2026-05-20: the trend-pullback strategy is a proven net loser
+# (-$1,358 over 19 trades, -$71/trade — all of today's red). New entry-quality
+# gates were added but are unproven. Keep it OFF until it demonstrates a positive
+# edge over a few sessions, then flip back to True to re-enable.
+ENABLE_TREND_STRATEGY = False
+
+# Shorts have a much weaker edge than longs (lifetime exp +$17.6 vs +$59/trade)
+# in this generally-bullish regime. Require shorts to be more extended from VWAP
+# than longs before entering — a higher bar filters out marginal counter-rallies.
+SHORT_DEV_MULTIPLIER = 1.3
+
+# Strong-trend day types where VWAP reversion has little edge and gets whipsawed.
+# On these days the bot scales reversion size down to the minimum (1 contract)
+# instead of forcing normal size into a market that isn't reverting.
+STRONG_TREND_DAY_TYPES = {'trend_day_up', 'trend_day_down', 'gap_and_go_up', 'gap_and_go_down'}
 
 TUNE_BOUNDS = {
     'long':  {'rsi': {'min': 30, 'max': 65}},
@@ -107,8 +142,8 @@ BLOCKED_HOURS_ET = {
     #       19, 20 (evening transition, -$655 — caused tonight's live loss),
     #       22, 23 (overnight transition, kept).
     # KEEP TRADING: 9-15 ET (NY day), 21 ET (Asia open), 0-6 ET (overnight) — all profitable.
-    'ES': {7, 8, 16, 19, 20, 22, 23},
-    'NQ': {7, 8, 16, 19, 20, 22, 23},
+    'ES': {7, 8, 16},
+    'NQ': {7, 8, 16},
 }
 
 TIMEZONE    = 'America/New_York'

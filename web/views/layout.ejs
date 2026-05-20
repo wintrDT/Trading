@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%- title %> — Sharp Bot</title>
+  <link rel="stylesheet" href="/style.css?v=6">
+  <% if (typeof scripts !== 'undefined') { %><%- scripts %><% } %>
+</head>
+<body>
+  <% if (typeof user !== 'undefined' && user) { %>
+  <nav class="navbar">
+    <div class="nav-brand">⚡ Sharp Bot</div>
+    <div class="nav-links">
+      <a href="/" class="<%= currentPage === 'dashboard' ? 'active' : '' %>">Dashboard</a>
+      <% if (user.role === 'admin') { %>
+      <a href="/admin" class="<%= currentPage === 'admin' ? 'active' : '' %>">Admin</a>
+      <% } %>
+      <span class="nav-user">@<%= user.username %></span>
+      <a href="/auth/logout" class="btn-logout">Logout</a>
+    </div>
+  </nav>
+  <% } %>
+  <main>
+    <%- body %>
+  </main>
+</body>
+</html>

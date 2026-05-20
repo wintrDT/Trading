@@ -1,8 +1,11 @@
 import time
 from datetime import date, datetime, timezone
-from bot.config import EXIT_RULES, FILL_WAIT_SECS
+import pytz
+from bot.config import EXIT_RULES, ZERO_DTE_EXIT_RULES, FILL_WAIT_SECS, TIMEZONE
 from bot.scanner import build_option_symbol, calc_dte
-from bot.db import get_open_trades, update_trade_closed, update_trade_status
+from bot.db import get_open_trades, update_trade_closed, update_trade_status, update_trade_mark
+
+_ET = pytz.timezone(TIMEZONE)
 
 _FILL_STATUSES = {'filled', 'partially_filled'}
 
@@ -21,6 +24,19 @@ def should_close(entry_credit: float, current_mark: float, dte: int = 99):
         return 'stop_loss'
     if dte <= EXIT_RULES['dte_close']:
         return 'dte_expire'
+    return None
+
+
+def should_close_0dte(entry_credit: float, current_mark: float) -> str | None:
+    pnl_pct = calc_pnl_pct(entry_credit, current_mark)
+    if pnl_pct >= ZERO_DTE_EXIT_RULES['profit_target_pct']:
+        return 'profit_target'
+    if pnl_pct <= -ZERO_DTE_EXIT_RULES['stop_loss_pct']:
+        return 'stop_loss'
+    h, m = map(int, ZERO_DTE_EXIT_RULES['latest_close_time'].split(':'))
+    from datetime import time as _Time
+    if datetime.now(_ET).time() >= _Time(h, m):
+        return 'time_exit'
     return None
 
 
@@ -61,36 +77,74 @@ def _build_close_legs(trade):
     return legs
 
 
+def _exit_reason(trade, current_mark, dte):
+    if trade.get('trade_type') == '0dte':
+        return should_close_0dte(trade['entry_credit'], current_mark)
+    return should_close(trade['entry_credit'], current_mark, dte)
+
+
 def manage_positions(client, db_path):
     today = date.today()
-    positions = client.get_positions()
-    pos_map = {str(p.symbol): float(p.mark_price) for p in positions}
-    for trade in get_open_trades(db_path):
-        if trade['status'] != 'open':
-            continue
-        dte = calc_dte(date.fromisoformat(trade['expiration']), today)
-        current_mark = _get_spread_mark(pos_map, trade)
-        reason = should_close(trade['entry_credit'], current_mark, dte)
-        if reason is None:
-            continue
+    open_trades = [t for t in get_open_trades(db_path) if t['status'] == 'open']
+    if not open_trades:
+        return
 
-        legs = _build_close_legs(trade)
-        response = client.place_debit_order(legs, round(current_mark, 2))
-        order_id = str(response.order.id)
-        update_trade_status(db_path, trade['id'], 'pending')
+    real_trades = [t for t in open_trades if t.get('order_id') != 'SIM']
+    sim_trades  = [t for t in open_trades if t.get('order_id') == 'SIM']
 
-        time.sleep(FILL_WAIT_SECS)
-        order = client.get_order(order_id)
-        if str(order.status).lower() in _FILL_STATUSES:
+    # ── Real trades ───────────────────────────────────────────────────
+    if real_trades:
+        positions = client.get_positions()
+        pos_map = {str(p.symbol): float(p.mark_price) for p in positions}
+        for trade in real_trades:
+            dte = calc_dte(date.fromisoformat(trade['expiration']), today)
+            current_mark = _get_spread_mark(pos_map, trade)
+            update_trade_mark(db_path, trade['id'], current_mark)
+            reason = _exit_reason(trade, current_mark, dte)
+            if reason is None:
+                continue
+
+            legs = _build_close_legs(trade)
+            response = client.place_debit_order(legs, round(current_mark, 2))
+            order_id = str(response.order.id)
+            update_trade_status(db_path, trade['id'], 'pending')
+
+            time.sleep(FILL_WAIT_SECS)
+            order = client.get_order(order_id)
+            if str(order.status).lower() in _FILL_STATUSES:
+                update_trade_closed(
+                    db_path, trade['id'],
+                    close_credit=current_mark,
+                    close_reason=reason,
+                    close_ts=datetime.now(timezone.utc).isoformat(),
+                )
+            else:
+                try:
+                    client.cancel_order(order_id)
+                except Exception:
+                    pass
+                update_trade_status(db_path, trade['id'], 'open')
+
+    # ── Sim trades ────────────────────────────────────────────────────
+    if sim_trades:
+        marks = client.get_sim_marks(sim_trades)
+        for trade in sim_trades:
+            dte = calc_dte(date.fromisoformat(trade['expiration']), today)
+            current_mark = marks.get(trade['id'])
+            if current_mark is None:
+                is_0dte = trade.get('trade_type') == '0dte'
+                reason = _exit_reason(trade, 0.0, dte) if is_0dte else (
+                    'dte_expire' if dte <= EXIT_RULES['dte_close'] else None
+                )
+                current_mark = 0.0
+            else:
+                update_trade_mark(db_path, trade['id'], current_mark)
+                reason = _exit_reason(trade, current_mark, dte)
+            if reason is None:
+                continue
             update_trade_closed(
                 db_path, trade['id'],
                 close_credit=current_mark,
                 close_reason=reason,
                 close_ts=datetime.now(timezone.utc).isoformat(),
             )
-        else:
-            try:
-                client.cancel_order(order_id)
-            except Exception:
-                pass
-            update_trade_status(db_path, trade['id'], 'open')

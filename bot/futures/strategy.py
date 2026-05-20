@@ -247,31 +247,34 @@ def day_type_blocks_direction(day_type: str | None, direction: str) -> str | Non
 
 def check_trend_pullback(channel_state: ChannelState,
                          below_vwap_streak: int, above_vwap_streak: int,
-                         regime_bars: int = 10, pullback_bars: int = 2) -> str | None:
-    """Trend-following pullback entry for SUSTAINED one-directional moves.
+                         regime_bars: int = 10) -> str | None:
+    """Trend-following pullback entry — enters AFTER the pullback turns, not into it.
 
     Complements the VWAP reversion strategy, which has no setups when price
     stays on one side of VWAP for a long time (pure trend days).
 
-    - Downtrend (price below VWAP for regime_bars+ scans): SHORT a pullback
-      rally — when the last `pullback_bars` closes rose, sell into the bounce.
-    - Uptrend (price above VWAP for regime_bars+ scans): LONG a pullback dip.
+    The old version bought while price was still falling (a 2-bar down move),
+    which caught falling knives (the 2026-05-20 trend-long losses). Now we wait
+    for a confirmed local reversal — the "wait one candle" confirmation:
+
+    - Uptrend (above VWAP regime_bars+ scans): a dip to a local bottom that has
+      just ticked back UP -> LONG (buy the dip *after* it turns).
+    - Downtrend (below VWAP regime_bars+ scans): a bounce to a local top that has
+      just ticked back DOWN -> SHORT (sell the bounce *after* it rolls over).
 
     Returns 'long', 'short', or None.
     """
     window = list(channel_state._window)
-    if len(window) < pullback_bars + 1:
+    if len(window) < 3:
         return None
-    recent = window[-(pullback_bars + 1):]
+    a, b, c = window[-3], window[-2], window[-1]   # oldest -> middle -> latest
 
-    if below_vwap_streak >= regime_bars:
-        # Confirmed downtrend — short when price just bounced up `pullback_bars` bars
-        if all(recent[i] > recent[i - 1] for i in range(1, len(recent))):
-            return 'short'
-    elif above_vwap_streak >= regime_bars:
-        # Confirmed uptrend — long when price just dipped down `pullback_bars` bars
-        if all(recent[i] < recent[i - 1] for i in range(1, len(recent))):
+    if above_vwap_streak >= regime_bars:
+        if a > b and c > b:        # local bottom at b, now turning up
             return 'long'
+    elif below_vwap_streak >= regime_bars:
+        if a < b and c < b:        # local top at b, now turning down
+            return 'short'
     return None
 
 

@@ -34,6 +34,13 @@
     details summary { cursor:pointer; color:var(--text2); font-size:0.82rem; padding:4px 0; user-select:none; }
     details summary:hover { color:var(--text); }
     details[open] summary { color:var(--accent); }
+    .pnl-bar-wrap { width:90px; height:5px; background:rgba(255,255,255,0.08); border-radius:3px; margin-top:4px; }
+    .pnl-bar-fill { height:5px; border-radius:3px; transition:width 0.3s; }
+    .pnl-bar-fill.profit { background:#00d4a0; }
+    .pnl-bar-fill.loss   { background:#ff4f4f; }
+    .sect-tab { background:rgba(255,255,255,0.05); border:1px solid var(--border); border-radius:8px; padding:8px 20px; font-size:0.82rem; font-weight:600; color:var(--text2); cursor:pointer; transition:all 0.2s; }
+    .sect-tab:hover { color:var(--text); background:rgba(255,255,255,0.08); }
+    .sect-tab.active { background:rgba(0,212,160,0.12); border-color:rgba(0,212,160,0.4); color:#00d4a0; }
   </style>
 </head>
 <body>
@@ -79,9 +86,11 @@
         </div>
       </div>
       <div class="nav-dropdown">
-        <button class="nav-dropdown-trigger active">Options Trading <span class="dd-arrow">▼</span></button>
+        <button class="nav-dropdown-trigger active">Trading <span class="dd-arrow">▼</span></button>
         <div class="nav-dropdown-menu">
-          <a href="/options" class="active">Dashboard</a>
+          <a href="/options" class="active">Options</a>
+          <a href="/futures">Futures</a>
+          <a href="/crypto">Crypto</a>
         </div>
       </div>
       <a href="/settings">Settings</a>
@@ -137,7 +146,72 @@
       </div>
     </div>
 
-    <!-- Open Positions -->
+    <!-- Section tabs -->
+    <div style="display:flex;gap:8px;margin-bottom:1.25rem">
+      <button class="sect-tab active" onclick="switchTab('premium',this)">Premium Selling</button>
+      <button class="sect-tab" onclick="switchTab('0dte',this)">0DTE Trading</button>
+    </div>
+
+    <!-- PREMIUM SELLING SECTION -->
+    <div id="tab-premium">
+
+    <!-- Manual Paper Trade (Simulation mode only) -->
+    <% if (typeof simMode !== 'undefined' && simMode) { %>
+    <div class="card" style="margin-bottom:1.25rem">
+      <p class="sect-hdr">Manual Paper Trade — Premium</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Symbol</div>
+          <select id="mt-underlying" class="gen-input" style="width:90px;font-size:13px">
+            <option>SPY</option><option>QQQ</option><option>IWM</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Strategy</div>
+          <select id="mt-strategy" class="gen-input" style="width:130px;font-size:13px" onchange="toggleCallStrikes()">
+            <option value="bull_put_spread">Bull Put Spread</option>
+            <option value="iron_condor">Iron Condor</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Expiration</div>
+          <input type="date" id="mt-expiration" class="gen-input" style="width:140px;font-size:13px">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Short Put</div>
+          <input type="number" id="mt-short-put" class="gen-input" style="width:80px;font-size:13px" placeholder="530">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Long Put</div>
+          <input type="number" id="mt-long-put" class="gen-input" style="width:80px;font-size:13px" placeholder="525">
+        </div>
+        <div id="call-strikes" style="display:none;gap:10px;align-items:flex-end">
+          <div>
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Short Call</div>
+            <input type="number" id="mt-short-call" class="gen-input" style="width:80px;font-size:13px" placeholder="560">
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Long Call</div>
+            <input type="number" id="mt-long-call" class="gen-input" style="width:80px;font-size:13px" placeholder="565">
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Credit</div>
+          <input type="number" id="mt-credit" class="gen-input" step="0.01" style="width:80px;font-size:13px" placeholder="1.50">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Contracts</div>
+          <input type="number" id="mt-contracts" class="gen-input" style="width:70px;font-size:13px" value="1" min="1">
+        </div>
+        <div>
+          <button class="btn-sm" onclick="submitManualTrade()" style="font-size:12px;padding:9px 18px">Place Paper Trade</button>
+        </div>
+      </div>
+      <div id="mt-result" style="font-size:12px;margin-top:8px;min-height:18px"></div>
+    </div>
+    <% } %>
+
+    <!-- Open Positions — Premium -->
     <div class="card" style="margin-bottom: 1.25rem;">
       <p class="sect-hdr">Open Positions</p>
       <% if (openTrades && openTrades.length > 0) { %>
@@ -151,18 +225,36 @@
               <th>Expiration</th>
               <th>DTE</th>
               <th>Entry Credit</th>
+              <th>P&amp;L %</th>
+              <th>Target</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
             <% for (const t of openTrades) { %>
-            <tr class="<%= t.status === 'pending' ? 'row-pending' : '' %>">
+            <%
+              const entry = parseFloat(t.entry_credit) || 0;
+              const mark  = t.current_mark != null ? parseFloat(t.current_mark) : null;
+              const pnlPct = (mark != null && entry > 0) ? Math.round((entry - mark) / entry * 100) : null;
+              const barPct = pnlPct != null ? Math.min(100, Math.max(0, pnlPct)) : 0;
+              const rowClass = t.status === 'pending' ? 'row-pending' : (pnlPct != null && pnlPct < -100 ? 'row-loss' : '');
+            %>
+            <tr class="<%= rowClass %>">
               <td><%= t.underlying %></td>
               <td><%- stratBadge(t.strategy) %></td>
               <td><%= strikes(t) %></td>
               <td><%= t.expiration %></td>
               <td><%= dte(t.expiration) %></td>
               <td><%= money(t.entry_credit) %></td>
+              <td style="font-family:'Space Mono',monospace;">
+                <% if (pnlPct != null) { %>
+                  <span style="color:<%= pnlPct >= 0 ? '#00d4a0' : '#ff4f4f' %>"><%= pnlPct >= 0 ? '+' : '' %><%= pnlPct %>%</span>
+                  <div class="pnl-bar-wrap">
+                    <div class="pnl-bar-fill <%= pnlPct >= 0 ? 'profit' : 'loss' %>" style="width:<%= barPct %>%"></div>
+                  </div>
+                <% } else { %>—<% } %>
+              </td>
+              <td style="color:var(--text2);font-size:0.78rem;">50% / 200%<br><span style="font-size:0.70rem;">close &lt;7 DTE</span></td>
               <td>
                 <% if (t.status === 'pending') { %>
                   <span class="badge b-pend">Pending</span>
@@ -180,7 +272,7 @@
       <% } %>
     </div>
 
-    <!-- Scanner Feed -->
+    <!-- Scanner Feed — Premium -->
     <div class="card" style="margin-bottom: 1.25rem;">
       <p class="sect-hdr">Scanner Feed</p>
       <% if (recentScans && recentScans.length > 0) { %>
@@ -208,10 +300,16 @@
               <td><%- stratBadge(s.strategy) %></td>
               <td><%= strikes(s) %></td>
               <td><%= money(s.credit) %></td>
-              <td><%= s.iv_rank != null ? s.iv_rank + '%' : '—' %></td>
-              <td><%= s.delta != null ? s.delta : '—' %></td>
+              <td><%= s.iv_rank != null ? parseFloat(s.iv_rank).toFixed(1) + '%' : '—' %></td>
+              <td><%= s.delta != null ? parseFloat(s.delta).toFixed(2) : '—' %></td>
               <td><%= s.expiration ? dte(s.expiration) : '—' %></td>
-              <td><% if (s.traded == 1) { %><span class="badge b-traded">Traded</span><% } %></td>
+              <td>
+                <% if (s.traded == 1) { %>
+                  <span class="badge b-traded">Traded</span>
+                <% } else if (typeof simMode !== 'undefined' && simMode) { %>
+                  <button class="btn-sm" style="font-size:11px;padding:4px 10px" data-scan="<%- JSON.stringify(s).replace(/"/g, '&quot;') %>" onclick="fillFromScan(this)">Trade This</button>
+                <% } %>
+              </td>
             </tr>
             <% } %>
           </tbody>
@@ -222,7 +320,7 @@
       <% } %>
     </div>
 
-    <!-- Trade History -->
+    <!-- Trade History — Premium -->
     <div class="card" style="margin-bottom: 1.25rem;">
       <details>
         <summary><span class="sect-hdr" style="display:inline;">Trade History</span> &nbsp;<span style="font-size:0.75rem; color:var(--text2);">(<%= closedTrades ? closedTrades.length : 0 %> closed)</span></summary>
@@ -232,33 +330,20 @@
             <table class="opt-table">
               <thead>
                 <tr>
-                  <th>Symbol</th>
-                  <th>Strategy</th>
-                  <th>Strikes</th>
-                  <th>Expiration</th>
-                  <th>Entry</th>
-                  <th>Close</th>
-                  <th>P&amp;L</th>
-                  <th>Reason</th>
-                  <th>Date</th>
+                  <th>Symbol</th><th>Strategy</th><th>Strikes</th><th>Expiration</th>
+                  <th>Entry</th><th>Close</th><th>P&amp;L</th><th>Reason</th><th>Date</th>
                 </tr>
               </thead>
               <tbody>
-                <% const sorted = closedTrades; %>
-                <% for (const t of sorted) { %>
-                <%
-                  const pnl = ((parseFloat(t.entry_credit) || 0) - (parseFloat(t.close_credit) || 0)) * (parseInt(t.contracts) || 1) * 100;
-                %>
+                <% for (const t of closedTrades) { %>
+                <% const pnl = ((parseFloat(t.entry_credit)||0)-(parseFloat(t.close_credit)||0))*(parseInt(t.contracts)||1)*100; %>
                 <tr class="<%= pnl >= 0 ? 'row-profit' : 'row-loss' %>">
-                  <td><%= t.underlying %></td>
-                  <td><%- stratBadge(t.strategy) %></td>
-                  <td><%= strikes(t) %></td>
-                  <td><%= t.expiration %></td>
-                  <td><%= money(t.entry_credit) %></td>
-                  <td><%= money(t.close_credit) %></td>
-                  <td style="font-family:'Space Mono',monospace;font-weight:700;"><%= pnl >= 0 ? '+' : '' %><%= money(pnl) %></td>
-                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_reason || '—' %></td>
-                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_ts ? new Date(t.close_ts).toLocaleDateString() : '—' %></td>
+                  <td><%= t.underlying %></td><td><%- stratBadge(t.strategy) %></td>
+                  <td><%= strikes(t) %></td><td><%= t.expiration %></td>
+                  <td><%= money(t.entry_credit) %></td><td><%= money(t.close_credit) %></td>
+                  <td style="font-family:'Space Mono',monospace;font-weight:700;"><%= pnl>=0?'+':'' %><%= money(pnl) %></td>
+                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_reason||'—' %></td>
+                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_ts?new Date(t.close_ts).toLocaleDateString():'—' %></td>
                 </tr>
                 <% } %>
               </tbody>
@@ -270,6 +355,187 @@
         </div>
       </details>
     </div>
+
+    </div><!-- end #tab-premium -->
+
+    <!-- 0DTE TRADING SECTION -->
+    <div id="tab-0dte" style="display:none">
+
+    <!-- Manual 0DTE Paper Trade (Simulation mode only) -->
+    <% if (typeof simMode !== 'undefined' && simMode) { %>
+    <div class="card" style="margin-bottom:1.25rem">
+      <p class="sect-hdr">Manual Paper Trade — 0DTE</p>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Symbol</div>
+          <select id="mt0-underlying" class="gen-input" style="width:90px;font-size:13px">
+            <option>SPY</option><option>QQQ</option><option>IWM</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Strategy</div>
+          <select id="mt0-strategy" class="gen-input" style="width:130px;font-size:13px" onchange="toggleCallStrikes0()">
+            <option value="iron_condor">Iron Condor</option>
+            <option value="bull_put_spread">Bull Put Spread</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Expiration</div>
+          <input type="date" id="mt0-expiration" class="gen-input" style="width:140px;font-size:13px">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Short Put</div>
+          <input type="number" id="mt0-short-put" class="gen-input" style="width:80px;font-size:13px" placeholder="530">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Long Put</div>
+          <input type="number" id="mt0-long-put" class="gen-input" style="width:80px;font-size:13px" placeholder="529">
+        </div>
+        <div id="call-strikes-0dte" style="display:flex;gap:10px;align-items:flex-end">
+          <div>
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Short Call</div>
+            <input type="number" id="mt0-short-call" class="gen-input" style="width:80px;font-size:13px" placeholder="535">
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Long Call</div>
+            <input type="number" id="mt0-long-call" class="gen-input" style="width:80px;font-size:13px" placeholder="536">
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Credit</div>
+          <input type="number" id="mt0-credit" class="gen-input" step="0.01" style="width:80px;font-size:13px" placeholder="0.50">
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Contracts</div>
+          <input type="number" id="mt0-contracts" class="gen-input" style="width:70px;font-size:13px" value="1" min="1">
+        </div>
+        <div>
+          <button class="btn-sm" onclick="submitManualTrade0dte()" style="font-size:12px;padding:9px 18px">Place 0DTE Trade</button>
+        </div>
+      </div>
+      <div id="mt0-result" style="font-size:12px;margin-top:8px;min-height:18px"></div>
+    </div>
+    <% } %>
+
+    <!-- Open Positions — 0DTE -->
+    <div class="card" style="margin-bottom: 1.25rem;">
+      <p class="sect-hdr">Open 0DTE Positions</p>
+      <% if (openTrades0dte && openTrades0dte.length > 0) { %>
+      <div style="overflow-x: auto;">
+        <table class="opt-table">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Strategy</th><th>Strikes</th><th>Expiration</th>
+              <th>Entry Credit</th><th>P&amp;L %</th><th>Exit Rules</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% for (const t of openTrades0dte) { %>
+            <%
+              const entry0 = parseFloat(t.entry_credit) || 0;
+              const mark0  = t.current_mark != null ? parseFloat(t.current_mark) : null;
+              const pnl0   = (mark0 != null && entry0 > 0) ? Math.round((entry0 - mark0) / entry0 * 100) : null;
+              const bar0   = pnl0 != null ? Math.min(100, Math.max(0, pnl0)) : 0;
+            %>
+            <tr class="<%= t.status==='pending'?'row-pending':(pnl0!=null&&pnl0<-50?'row-loss':'') %>">
+              <td><%= t.underlying %></td>
+              <td><%- stratBadge(t.strategy) %></td>
+              <td><%= strikes(t) %></td>
+              <td><%= t.expiration %></td>
+              <td><%= money(t.entry_credit) %></td>
+              <td style="font-family:'Space Mono',monospace;">
+                <% if (pnl0 != null) { %>
+                  <span style="color:<%= pnl0>=0?'#00d4a0':'#ff4f4f' %>"><%= pnl0>=0?'+':'' %><%= pnl0 %>%</span>
+                  <div class="pnl-bar-wrap"><div class="pnl-bar-fill <%= pnl0>=0?'profit':'loss' %>" style="width:<%= bar0 %>%"></div></div>
+                <% } else { %>—<% } %>
+              </td>
+              <td style="color:var(--text2);font-size:0.78rem;">50% profit / 100% stop<br><span style="font-size:0.70rem;">force-close 3:00 PM</span></td>
+              <td><span class="badge <%= t.status==='pending'?'b-pend':'b-open' %>"><%= t.status==='pending'?'Pending':'Open' %></span></td>
+            </tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+      <% } else { %>
+      <p style="color: var(--text2); font-size: 0.82rem; padding: 0.5rem 0;">No open 0DTE positions.</p>
+      <% } %>
+    </div>
+
+    <!-- Scanner Feed — 0DTE -->
+    <div class="card" style="margin-bottom: 1.25rem;">
+      <p class="sect-hdr">0DTE Scanner Feed</p>
+      <% if (recentScans0dte && recentScans0dte.length > 0) { %>
+      <div style="overflow-x: auto;">
+        <table class="opt-table">
+          <thead>
+            <tr>
+              <th>Time</th><th>Symbol</th><th>Strategy</th><th>Strikes</th>
+              <th>Credit</th><th>Delta</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% for (const s of recentScans0dte) { %>
+            <tr>
+              <td style="color:var(--text2);font-family:'Space Mono',monospace;font-size:0.75rem;"><%= s.ts?new Date(s.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'—' %></td>
+              <td><%= s.underlying %></td>
+              <td><%- stratBadge(s.strategy) %></td>
+              <td><%= strikes(s) %></td>
+              <td><%= money(s.credit) %></td>
+              <td><%= s.delta!=null?parseFloat(s.delta).toFixed(2):'—' %></td>
+              <td>
+                <% if (s.traded==1) { %>
+                  <span class="badge b-traded">Traded</span>
+                <% } else if (typeof simMode!=='undefined'&&simMode) { %>
+                  <button class="btn-sm" style="font-size:11px;padding:4px 10px" data-scan="<%- JSON.stringify(s).replace(/"/g,'&quot;') %>" onclick="fillFromScan0dte(this)">Trade This</button>
+                <% } %>
+              </td>
+            </tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+      <% } else { %>
+      <p style="color: var(--text2); font-size: 0.82rem; padding: 0.5rem 0;">No 0DTE scans yet. Scanner runs 9:45–11:00 AM and 1:30–2:30 PM ET.</p>
+      <% } %>
+    </div>
+
+    <!-- Trade History — 0DTE -->
+    <div class="card" style="margin-bottom: 1.25rem;">
+      <details>
+        <summary><span class="sect-hdr" style="display:inline;">0DTE Trade History</span> &nbsp;<span style="font-size:0.75rem;color:var(--text2);">(<%= closedTrades0dte?closedTrades0dte.length:0 %> closed)</span></summary>
+        <div style="margin-top:1rem;">
+          <% if (closedTrades0dte && closedTrades0dte.length > 0) { %>
+          <div style="overflow-x:auto;">
+            <table class="opt-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th><th>Strategy</th><th>Strikes</th><th>Entry</th>
+                  <th>Close</th><th>P&amp;L</th><th>Reason</th><th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                <% for (const t of closedTrades0dte) { %>
+                <% const pnl0h=((parseFloat(t.entry_credit)||0)-(parseFloat(t.close_credit)||0))*(parseInt(t.contracts)||1)*100; %>
+                <tr class="<%= pnl0h>=0?'row-profit':'row-loss' %>">
+                  <td><%= t.underlying %></td><td><%- stratBadge(t.strategy) %></td>
+                  <td><%= strikes(t) %></td>
+                  <td><%= money(t.entry_credit) %></td><td><%= money(t.close_credit) %></td>
+                  <td style="font-family:'Space Mono',monospace;font-weight:700;"><%= pnl0h>=0?'+':'' %><%= money(pnl0h) %></td>
+                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_reason||'—' %></td>
+                  <td style="color:var(--text2);font-size:0.78rem;"><%= t.close_ts?new Date(t.close_ts).toLocaleDateString():'—' %></td>
+                </tr>
+                <% } %>
+              </tbody>
+            </table>
+          </div>
+          <% } else { %>
+          <p style="color:var(--text2);font-size:0.82rem;padding:0.5rem 0;">No closed 0DTE trades yet.</p>
+          <% } %>
+        </div>
+      </details>
+    </div>
+
+    </div><!-- end #tab-0dte -->
 
   </div>
 
@@ -292,5 +558,117 @@
     }
   </script>
   <script src="/nav.js?v=4"></script>
+  <script>
+    function switchTab(name, el) {
+      document.getElementById('tab-premium').style.display = name === 'premium' ? '' : 'none';
+      document.getElementById('tab-0dte').style.display    = name === '0dte'    ? '' : 'none';
+      document.querySelectorAll('.sect-tab').forEach(t => t.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    function fillFromScan(btn) {
+      const s = JSON.parse(btn.dataset.scan);
+      document.getElementById('mt-underlying').value = s.underlying;
+      document.getElementById('mt-strategy').value   = s.strategy;
+      document.getElementById('mt-expiration').value = s.expiration;
+      document.getElementById('mt-short-put').value  = s.short_put_strike;
+      document.getElementById('mt-long-put').value   = s.long_put_strike;
+      document.getElementById('mt-short-call').value = s.short_call_strike || '';
+      document.getElementById('mt-long-call').value  = s.long_call_strike  || '';
+      document.getElementById('mt-credit').value     = s.credit;
+      toggleCallStrikes();
+      document.getElementById('mt-underlying').closest('.card').scrollIntoView({ behavior: 'smooth' });
+    }
+    function toggleCallStrikes() {
+      const isIC = document.getElementById('mt-strategy').value === 'iron_condor';
+      document.getElementById('call-strikes').style.display = isIC ? 'flex' : 'none';
+    }
+    function toggleCallStrikes0() {
+      const isIC = document.getElementById('mt0-strategy').value === 'iron_condor';
+      document.getElementById('call-strikes-0dte').style.display = isIC ? 'flex' : 'none';
+    }
+    function fillFromScan0dte(btn) {
+      const s = JSON.parse(btn.dataset.scan);
+      document.getElementById('mt0-underlying').value  = s.underlying;
+      document.getElementById('mt0-strategy').value    = s.strategy;
+      document.getElementById('mt0-expiration').value  = s.expiration;
+      document.getElementById('mt0-short-put').value   = s.short_put_strike;
+      document.getElementById('mt0-long-put').value    = s.long_put_strike;
+      document.getElementById('mt0-short-call').value  = s.short_call_strike || '';
+      document.getElementById('mt0-long-call').value   = s.long_call_strike  || '';
+      document.getElementById('mt0-credit').value      = s.credit;
+      toggleCallStrikes0();
+    }
+    async function submitManualTrade0dte() {
+      const result = document.getElementById('mt0-result');
+      const body = {
+        underlying:  document.getElementById('mt0-underlying').value,
+        strategy:    document.getElementById('mt0-strategy').value,
+        expiration:  document.getElementById('mt0-expiration').value,
+        short_put:   document.getElementById('mt0-short-put').value,
+        long_put:    document.getElementById('mt0-long-put').value,
+        short_call:  document.getElementById('mt0-short-call').value,
+        long_call:   document.getElementById('mt0-long-call').value,
+        credit:      document.getElementById('mt0-credit').value,
+        contracts:   document.getElementById('mt0-contracts').value,
+        trade_type:  '0dte',
+      };
+      if (!body.expiration || !body.short_put || !body.long_put || !body.credit) {
+        result.innerHTML = '<span style="color:var(--yellow)">Fill in all required fields.</span>';
+        return;
+      }
+      result.innerHTML = '<span style="color:var(--text2)">Placing…</span>';
+      try {
+        const res = await fetch('/options/manual-trade', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          result.innerHTML = '<span style="color:var(--green)">✅ Trade recorded — page will refresh.</span>';
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          result.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+        }
+      } catch (e) {
+        result.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+      }
+    }
+
+    async function submitManualTrade() {
+      const result = document.getElementById('mt-result');
+      const body = {
+        underlying:  document.getElementById('mt-underlying').value,
+        strategy:    document.getElementById('mt-strategy').value,
+        expiration:  document.getElementById('mt-expiration').value,
+        short_put:   document.getElementById('mt-short-put').value,
+        long_put:    document.getElementById('mt-long-put').value,
+        short_call:  document.getElementById('mt-short-call').value,
+        long_call:   document.getElementById('mt-long-call').value,
+        credit:      document.getElementById('mt-credit').value,
+        contracts:   document.getElementById('mt-contracts').value,
+      };
+      if (!body.expiration || !body.short_put || !body.long_put || !body.credit) {
+        result.innerHTML = '<span style="color:var(--yellow)">Fill in all required fields.</span>';
+        return;
+      }
+      result.innerHTML = '<span style="color:var(--text2)">Placing…</span>';
+      try {
+        const res = await fetch('/options/manual-trade', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          result.innerHTML = '<span style="color:var(--green)">✅ Trade recorded — page will refresh.</span>';
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          result.innerHTML = `<span style="color:var(--red)">❌ ${data.error}</span>`;
+        }
+      } catch (e) {
+        result.innerHTML = `<span style="color:var(--red)">❌ ${e.message}</span>`;
+      }
+    }
+  </script>
 </body>
 </html>
