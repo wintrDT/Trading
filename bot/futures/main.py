@@ -25,7 +25,7 @@ from bot.futures.strategy import (
     VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState,
     calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter,
     classify_day_type, day_type_blocks_direction, compute_confidence,
-    micro_momentum_blocks,
+    micro_momentum_blocks, check_trend_pullback,
 )
 from bot.futures.risk import is_daily_loss_limit_hit
 from bot.futures.db import get_market_bias
@@ -362,33 +362,47 @@ def job_scan(client):
             if direction is None and pending:
                 blocked_by = f'pending {pending["side"]} (peak {pending["peak"]:.3f}%)'
 
-            # Day-type filter — block reversion entries on trend/gap days (always applies, no override)
+            # Day-type filter — block reversion entries on trend/gap days
             dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')
             if direction and dt_block:
                 log.info('%s %s blocked by day type: %s', symbol, direction, dt_block)
                 blocked_by = dt_block
                 direction = None
 
-                # Micro-momentum filter — catches the case where 20-bar SMA still says
-                # "up" but price has been falling for the last few bars.
-                if direction:
-                    mm_block = micro_momentum_blocks(channel_state, direction)
-                    if mm_block:
-                        log.info('%s %s blocked: %s', symbol, direction, mm_block)
-                        blocked_by = mm_block
-                        direction = None
+            # Micro-momentum filter — block reversion against the last 3 bars
+            if direction:
+                mm_block = micro_momentum_blocks(channel_state, direction)
+                if mm_block:
+                    log.info('%s %s blocked: %s', symbol, direction, mm_block)
+                    blocked_by = mm_block
+                    direction = None
 
-                # Hard trend filter — NO counter-trend reversions in normal regime.
-                if direction == 'long' and trend == 'down':
-                    direction = None
-                    blocked_by = 'trend=down (no longs)'
-                elif direction == 'short' and trend == 'up':
-                    direction = None
-                    blocked_by = 'trend=up (no shorts)'
+            # Hard trend filter — NO counter-trend reversions
+            if direction == 'long' and trend == 'down':
+                direction = None
+                blocked_by = 'trend=down (no longs)'
+            elif direction == 'short' and trend == 'up':
+                direction = None
+                blocked_by = 'trend=up (no shorts)'
 
             if direction:
-                # RSI is now an INPUT to the confidence score, not a hard gate.
                 signal, strategy = direction, 'vwap'
+
+        # Trend-following fallback — when reversion has no setup AND price is in a
+        # sustained one-directional regime, trade WITH the trend on a pullback.
+        # Short the bounces in a downtrend, buy the dips in an uptrend. This is what
+        # lets the bot participate on pure trend days when reversion sits frozen.
+        if signal is None and vwap is not None:
+            tf_dir = check_trend_pullback(
+                channel_state,
+                _consec_below_vwap.get(symbol, 0),
+                _consec_above_vwap.get(symbol, 0),
+            )
+            if tf_dir:
+                signal, strategy = tf_dir, 'trend'
+                blocked_by = None
+                log.info('%s trend-pullback %s — regime below=%d above=%d',
+                         symbol, tf_dir, _consec_below_vwap.get(symbol, 0), _consec_above_vwap.get(symbol, 0))
 
         orb_dir = check_orb_signal(price, orb_state, orb_end_min,
                                     STRATEGY_PARAMS['orb_min_range_ticks'], tick)

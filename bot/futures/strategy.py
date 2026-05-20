@@ -245,6 +245,36 @@ def day_type_blocks_direction(day_type: str | None, direction: str) -> str | Non
     return None
 
 
+def check_trend_pullback(channel_state: ChannelState,
+                         below_vwap_streak: int, above_vwap_streak: int,
+                         regime_bars: int = 10, pullback_bars: int = 2) -> str | None:
+    """Trend-following pullback entry for SUSTAINED one-directional moves.
+
+    Complements the VWAP reversion strategy, which has no setups when price
+    stays on one side of VWAP for a long time (pure trend days).
+
+    - Downtrend (price below VWAP for regime_bars+ scans): SHORT a pullback
+      rally — when the last `pullback_bars` closes rose, sell into the bounce.
+    - Uptrend (price above VWAP for regime_bars+ scans): LONG a pullback dip.
+
+    Returns 'long', 'short', or None.
+    """
+    window = list(channel_state._window)
+    if len(window) < pullback_bars + 1:
+        return None
+    recent = window[-(pullback_bars + 1):]
+
+    if below_vwap_streak >= regime_bars:
+        # Confirmed downtrend — short when price just bounced up `pullback_bars` bars
+        if all(recent[i] > recent[i - 1] for i in range(1, len(recent))):
+            return 'short'
+    elif above_vwap_streak >= regime_bars:
+        # Confirmed uptrend — long when price just dipped down `pullback_bars` bars
+        if all(recent[i] < recent[i - 1] for i in range(1, len(recent))):
+            return 'long'
+    return None
+
+
 def micro_momentum_blocks(channel_state: ChannelState, direction: str, lookback: int = 3) -> str | None:
     """Faster-reacting filter than the 20-bar SMA. Catches the case where SMA still
     says 'up' but price has been monotonically falling for the last few bars — the
