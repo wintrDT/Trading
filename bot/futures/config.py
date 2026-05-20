@@ -45,16 +45,12 @@ RISK_RULES = {
     'trade_timeout_minutes': 30,
     'cooldown_minutes': 2,  # base re-entry wait per symbol (x3 after a stop_loss) — cuts churn/fees
     # Fast-fail filter: if a trade is older than X seconds AND has NEVER shown
-    # positive MFE AND is currently >$Y underwater, close it early. Yesterday's
-    # data showed winners have avg MAE -$9 while losers have avg MAE -$262.
-    # Trades that don't go green within ~2 min are structurally lost causes.
-    'fast_fail_min_age_sec': 120,
+    # positive MFE AND is currently >$Y underwater, close it early.
+    # Grace period extended 120 -> 300s — ES/NQ trades often need 5-10 min to develop.
+    'fast_fail_min_age_sec': 300,
     'fast_fail_max_neg_usd': -50.0,
     # Minimum confidence score 0-100 required to enter a trade.
-    # Raised 60 -> 70 on 2026-05-19 after live-mode losses: 4 of 5 losing
-    # live trades had MFE <= 0 (never went green). Marginal-score trades
-    # were calling direction wrong from entry. Tighter floor cuts those.
-    'min_confidence': 70,
+    'min_confidence': 60,
     # Override threshold — when confidence >= this value, single-indicator filters
     # (SMA trend, day-type direction, micro-momentum) AND bounce confirmation
     # are bypassed. Raised 75 -> 85 so override is genuinely rare; only
@@ -101,11 +97,7 @@ SYMBOL_MAX_CONTRACTS = {
     'NQ': 1,
 }
 
-# QUARANTINED 2026-05-20: the trend-pullback strategy is a proven net loser
-# (-$1,358 over 19 trades, -$71/trade — all of today's red). New entry-quality
-# gates were added but are unproven. Keep it OFF until it demonstrates a positive
-# edge over a few sessions, then flip back to True to re-enable.
-ENABLE_TREND_STRATEGY = False
+ENABLE_TREND_STRATEGY = True
 
 # Shorts have a much weaker edge than longs (lifetime exp +$17.6 vs +$59/trade)
 # in this generally-bullish regime. Require shorts to be more extended from VWAP
@@ -143,8 +135,8 @@ BLOCKED_HOURS_ET = {
     #       19, 20 (evening transition, -$655 — caused tonight's live loss),
     #       22, 23 (overnight transition, kept).
     # KEEP TRADING: 9-15 ET (NY day), 21 ET (Asia open), 0-6 ET (overnight) — all profitable.
-    'ES': {7, 8, 16},
-    'NQ': {7, 8, 16},
+    'ES': {7, 8, 16, 19, 20, 22, 23},
+    'NQ': {7, 8, 16, 19, 20, 22, 23},
 }
 
 TIMEZONE    = 'America/New_York'
