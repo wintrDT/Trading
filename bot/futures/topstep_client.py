@@ -536,6 +536,76 @@ class TopstepXClient:
             return {'orderId': str(order_id)}
 
     # ------------------------------------------------------------------ #
+    # Position management — flatten + reconciliation
+    # ------------------------------------------------------------------ #
+    def get_open_position(self, symbol: str) -> dict | None:
+        """Return the live open position for `symbol` from TopStep, or None.
+
+        Shape: {'size': int, 'side': 'long'|'short', 'avgPrice': float, 'contractId': str}
+        Used to reconcile bot DB against broker reality before opening/closing.
+        """
+        if not self._connected:
+            return None
+        self._ensure_token()
+        contract_id = self._contracts.get(symbol)
+        try:
+            with self._lock:
+                resp = self._http.post('/api/Position/searchOpen', json={'accountId': self.account_id})
+                if resp.status_code != 200:
+                    return None
+                payload = resp.json()
+                positions = payload.get('positions', []) if isinstance(payload, dict) else payload
+            for p in positions:
+                # match by resolved contract id, else by display name prefix
+                pid = str(p.get('contractId', ''))
+                disp = (p.get('contractDisplayName') or '').upper()
+                if (contract_id and pid == contract_id) or disp.startswith(symbol.upper()):
+                    size = int(p.get('size', 0))
+                    if size == 0:
+                        return None
+                    # TopStep position type: 1 = Long, 2 = Short
+                    side = 'long' if p.get('type') == 1 else 'short'
+                    return {'size': size, 'side': side,
+                            'avgPrice': float(p.get('averagePrice', 0)),
+                            'contractId': pid}
+            return None
+        except Exception:
+            log.exception('TopstepX get_open_position failed for %s', symbol)
+            return None
+
+    def close_position(self, symbol: str) -> bool:
+        """Flatten the entire open position for `symbol` at TopStep.
+
+        Uses Position/closeContract (guaranteed flat) rather than a netting
+        market order — avoids residual/flip when DB size != broker size.
+        Returns True on success (or if already flat).
+        """
+        if not self._connected:
+            raise RuntimeError('TopstepX not connected')
+        self._ensure_token()
+        contract_id = self._contracts.get(symbol)
+        if not contract_id:
+            # try to discover it from the open position
+            pos = self.get_open_position(symbol)
+            contract_id = pos['contractId'] if pos else None
+        if not contract_id:
+            log.info('TopstepX close_position: no contract for %s — already flat', symbol)
+            return True
+        with self._lock:
+            resp = self._http.post('/api/Position/closeContract',
+                                   json={'accountId': self.account_id, 'contractId': contract_id})
+            if resp.status_code != 200:
+                raise RuntimeError(f'closeContract HTTP {resp.status_code}: {resp.text[:200]}')
+            data = resp.json()
+            if data.get('success') is False:
+                # errorCode for "no position" is benign — treat as already flat
+                err = (data.get('errorMessage') or '').lower()
+                if 'no position' in err or 'not found' in err:
+                    return True
+                raise RuntimeError(f'closeContract rejected: {data.get("errorMessage")}')
+            return True
+
+    # ------------------------------------------------------------------ #
     # Diagnostics — for "Test Connection" button in settings
     # ------------------------------------------------------------------ #
     def test_connection(self) -> dict:

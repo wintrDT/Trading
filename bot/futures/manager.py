@@ -94,10 +94,9 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
                 pass
 
         if reason:
-            if reason == 'stop_loss':
-                exit_price = stop
-            elif reason == 'profit_target':
-                exit_price = target
-            else:
-                exit_price = current_price
+            # Record the ACTUAL market price at the moment the exit triggered, not the
+            # theoretical stop/target level. Live market orders fill with slippage —
+            # current_price (the live quote that tripped the exit) is much closer to the
+            # real fill than the stop/target. In sim this is also more honest.
+            exit_price = current_price
             close_trade(client, db_path, trade, exit_price, reason, sim=sim)

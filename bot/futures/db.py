@@ -76,8 +76,16 @@ CREATE TABLE IF NOT EXISTS futures_news (
 
 @contextlib.contextmanager
 def _conn(db_path):
-    conn = sqlite3.connect(db_path)
+    # timeout=10s + WAL + busy_timeout so the Python bot (writes every 5s) and the
+    # Node web server (reads + manual closes) don't hit 'database is locked' under
+    # concurrent access. WAL lets readers and writers work without blocking.
+    conn = sqlite3.connect(db_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=10000')
+    except Exception:
+        pass
     try:
         yield conn
     except Exception:
@@ -173,12 +181,15 @@ def update_trade_extremes(db_path, trade_id, max_fav, max_adv):
 
 def update_trade_closed(db_path, trade_id, close_price, close_reason, close_ts, pnl):
     with _conn(db_path) as conn:
+        # AND status='open' guard prevents double-close race (manager + web button)
+        # from overwriting close data and double-counting P&L.
         cur = conn.execute(
-            "UPDATE futures_trades SET close_price=?,close_ts=?,close_reason=?,status='closed',pnl=? WHERE id=?",
+            "UPDATE futures_trades SET close_price=?,close_ts=?,close_reason=?,status='closed',pnl=? "
+            "WHERE id=? AND status='open'",
             (close_price, close_ts, close_reason, pnl, trade_id),
         )
         if cur.rowcount == 0:
-            raise ValueError(f"No futures trade with id={trade_id}")
+            raise ValueError(f"No OPEN futures trade with id={trade_id} (already closed?)")
 
 
 def mark_signal_traded(db_path, signal_id):

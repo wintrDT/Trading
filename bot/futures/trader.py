@@ -22,8 +22,22 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         contracts = max_allowed
 
     if any(t['symbol'] == symbol for t in get_open_trades(db_path)):
-        log.info('Skipping %s %s — already have open trade', symbol, direction)
+        log.info('Skipping %s %s — already have open trade (bot DB)', symbol, direction)
         return None
+
+    # Broker reconciliation — also check TopStep's ACTUAL positions, not just the
+    # bot DB. Prevents stacking contracts on top of a position the bot lost track
+    # of (this is what produced the 4-contract orphan). Only for live TopStep.
+    if not sim and hasattr(client, 'get_open_position'):
+        try:
+            broker_pos = client.get_open_position(symbol)
+            if broker_pos and broker_pos.get('size', 0) != 0:
+                log.warning('Skipping %s %s — TopStep already holds %d %s contracts (DB out of sync)',
+                            symbol, direction, broker_pos['size'], broker_pos['side'])
+                return None
+        except Exception:
+            log.exception('Broker position check failed for %s — skipping entry to be safe', symbol)
+            return None
 
     cooldown = RISK_RULES.get('cooldown_minutes', 0)
     if cooldown:
@@ -87,9 +101,17 @@ def place_entry(client, db_path, signal, contracts, sim=False):
 
     order_id = 'SIM'
     if not sim:
-        action   = 'Buy' if direction == 'long' else 'Sell'
-        resp     = client.place_order(symbol, action, contracts)
-        order_id = str(resp.get('orderId', 'UNKNOWN'))
+        action = 'Buy' if direction == 'long' else 'Sell'
+        try:
+            resp     = client.place_order(symbol, action, contracts)
+            order_id = str(resp.get('orderId', 'UNKNOWN'))
+        except Exception:
+            # Broker order failed — do NOT record a trade. If it threw after a
+            # partial fill we'd rather have no DB record than a wrong one; the
+            # broker-position check on the next entry will catch any orphan.
+            log.exception('Broker order FAILED for %s %s — no trade recorded', direction, symbol)
+            notifier.notify_system(f'Order FAILED: {direction} {symbol} — check TopStep manually', level='error')
+            return None
 
     trade_id = insert_trade(db_path, {
         'symbol':        symbol,
@@ -126,20 +148,35 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
     point_value = tick_data['point_value']
     pnl         = calc_pnl(trade['direction'], trade['entry_price'], current_price,
                            trade['contracts'], point_value)
-    if not sim and trade.get('order_id') != 'SIM':
-        action = 'Sell' if trade['direction'] == 'long' else 'Buy'
+
+    if not sim and trade.get('order_id') not in ('SIM', 'UNKNOWN', None):
+        # Prefer flatten (closeContract) — guarantees the position is fully closed
+        # at the broker even if DB size != broker size. Falls back to a netting
+        # market order for clients that don't expose close_position (e.g. Tastytrade).
         try:
-            client.place_order(trade['symbol'], action, trade['contracts'])
+            if hasattr(client, 'close_position'):
+                client.close_position(trade['symbol'])
+            else:
+                action = 'Sell' if trade['direction'] == 'long' else 'Buy'
+                client.place_order(trade['symbol'], action, trade['contracts'])
         except Exception:
-            log.exception('Failed to close %s trade id=%s', trade['symbol'], trade['id'])
-            return
-    update_trade_closed(
-        db_path, trade['id'],
-        close_price=current_price,
-        close_reason=reason,
-        close_ts=datetime.now(timezone.utc).isoformat(),
-        pnl=pnl,
-    )
+            log.exception('Failed to close %s trade id=%s at broker — leaving OPEN for retry',
+                          trade['symbol'], trade['id'])
+            return  # do NOT mark closed — manager will retry next cycle
+
+    try:
+        update_trade_closed(
+            db_path, trade['id'],
+            close_price=current_price,
+            close_reason=reason,
+            close_ts=datetime.now(timezone.utc).isoformat(),
+            pnl=pnl,
+        )
+    except ValueError:
+        # Already closed (race with web manual-close) — broker is flat, nothing to do
+        log.info('Trade id=%s already closed — skipping DB update', trade['id'])
+        return
+
     log.info('Closed: %s %s reason=%s price=%.2f pnl=%.2f',
              trade['direction'], trade['symbol'], reason, current_price, pnl)
     notifier.notify_exit(trade['symbol'], trade['direction'], pnl, reason,
