@@ -14,6 +14,7 @@ Token is then sent as Bearer auth header on all other endpoints.
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -23,6 +24,7 @@ log = logging.getLogger(__name__)
 
 TOPSTEPX_BASE      = 'https://api.topstepx.com'
 TOPSTEPX_MARKET_HUB = 'https://rtc.topstepx.com/hubs/market'
+TOPSTEPX_USER_HUB   = 'https://rtc.topstepx.com/hubs/user'
 
 
 # ============================================================================
@@ -181,6 +183,178 @@ class TopstepXMarketStream:
             pass
         self._connected = False
 
+
+# ============================================================================
+# Real-time USER stream (orders / positions / fills / account) — SignalR
+# ============================================================================
+class TopstepXUserStream:
+    """Real-time account stream via the TopstepX SignalR user hub.
+
+    Pushes order, position, trade (fill), and account events so the bot learns of
+    broker-side fills, position changes, and canTrade flips INSTANTLY instead of
+    polling every 5s. Maintains in-memory state (positions, account) and a rolling
+    list of recent fills for the dashboard. Additive: the critical balance/position
+    REST paths are unchanged — this is read via the get_live_* helpers.
+    """
+    def __init__(self, get_token, account_id):
+        self._get_token  = get_token
+        self.account_id  = account_id
+        self._lock       = threading.Lock()
+        self._connection = None
+        self._connected  = False
+        self._positions  = {}            # contractId -> {size, side, avgPrice, contractId}
+        self._account    = {}            # {balance, canTrade}
+        self._fills      = deque(maxlen=50)
+        self._last_event_at = 0.0
+
+    def connect(self) -> bool:
+        try:
+            from signalrcore.hub_connection_builder import HubConnectionBuilder
+        except ImportError:
+            log.error('signalrcore not installed — user stream disabled')
+            return False
+        try:
+            token = self._get_token()
+            if not token:
+                return False
+            url = f'{TOPSTEPX_USER_HUB}?access_token={token}'
+            self._connection = (HubConnectionBuilder()
+                .with_url(url, options={'skip_negotiation': True, 'verify_ssl': True})
+                .with_automatic_reconnect({
+                    'type': 'raw', 'keep_alive_interval': 10,
+                    'reconnect_interval': 5, 'max_attempts': 100,
+                })
+                .build())
+            self._connection.on('GatewayUserAccount',  self._on_account)
+            self._connection.on('GatewayUserPosition', self._on_position)
+            self._connection.on('GatewayUserTrade',    self._on_trade)
+            self._connection.on('GatewayUserOrder',    self._on_order)
+            self._connection.on_open(self._on_open)
+            self._connection.on_close(lambda: self._set_connected(False))
+            self._connection.on_error(lambda d: log.error('TopstepX user stream error: %s', d))
+            self._connection.start()
+            return True
+        except Exception:
+            log.exception('TopstepX user stream connect failed')
+            return False
+
+    def _set_connected(self, v):
+        with self._lock:
+            self._connected = v
+
+    def _on_open(self):
+        self._set_connected(True)
+        log.info('TopstepX SignalR USER stream OPEN')
+        for method, args in (('SubscribeAccounts', []),
+                             ('SubscribeOrders', [self.account_id]),
+                             ('SubscribePositions', [self.account_id]),
+                             ('SubscribeTrades', [self.account_id])):
+            try:
+                self._connection.send(method, args)
+            except Exception:
+                log.exception('TopstepX user subscribe %s failed', method)
+
+    @staticmethod
+    def _payload(args):
+        """Normalize event args to the inner data dict.
+
+        Handles [accountId, {...}], [{...}], {...}, and the {action, data:{...}}
+        envelope ProjectX sometimes uses.
+        """
+        obj = None
+        if isinstance(args, list):
+            for x in reversed(args):
+                if isinstance(x, dict):
+                    obj = x
+                    break
+        elif isinstance(args, dict):
+            obj = args
+        if isinstance(obj, dict) and isinstance(obj.get('data'), dict):
+            return obj['data']
+        return obj
+
+    def _on_account(self, args):
+        p = self._payload(args)
+        if not isinstance(p, dict):
+            return
+        with self._lock:
+            if 'balance' in p:
+                try: self._account['balance'] = float(p.get('balance') or 0)
+                except (TypeError, ValueError): pass
+            if 'canTrade' in p:
+                self._account['canTrade'] = bool(p.get('canTrade'))
+            self._last_event_at = time.time()
+
+    def _on_position(self, args):
+        p = self._payload(args)
+        if not isinstance(p, dict):
+            return
+        cid = str(p.get('contractId') or '')
+        if not cid:
+            return
+        try:
+            size = int(p.get('size', 0) or 0)
+        except (TypeError, ValueError):
+            size = 0
+        with self._lock:
+            if size == 0:
+                self._positions.pop(cid, None)
+            else:
+                self._positions[cid] = {
+                    'size': size,
+                    'side': 'long' if p.get('type') == 1 else 'short',
+                    'avgPrice': float(p.get('averagePrice', 0) or 0),
+                    'contractId': cid,
+                }
+            self._last_event_at = time.time()
+
+    def _on_trade(self, args):
+        p = self._payload(args)
+        if not isinstance(p, dict):
+            return
+        with self._lock:
+            self._fills.appendleft({
+                'ts':         p.get('creationTimestamp'),
+                'contractId': str(p.get('contractId') or ''),
+                'price':      p.get('price'),
+                'size':       p.get('size'),
+                'side':       'buy' if p.get('side') == 0 else 'sell',
+                'pnl':        p.get('profitAndLoss'),
+                'fees':       (p.get('fees') or 0) + (p.get('commissions') or 0),
+            })
+            self._last_event_at = time.time()
+
+    def _on_order(self, args):
+        # Order status updates — kept for the dashboard; not state-critical here.
+        with self._lock:
+            self._last_event_at = time.time()
+
+    def is_connected(self) -> bool:
+        with self._lock:
+            return self._connected
+
+    def get_account(self):
+        with self._lock:
+            return dict(self._account) if self._account else None
+
+    def get_position(self, contract_id):
+        with self._lock:
+            p = self._positions.get(str(contract_id))
+            return dict(p) if p else None
+
+    def recent_fills(self, n=20):
+        with self._lock:
+            return list(self._fills)[:n]
+
+    def stop(self):
+        try:
+            if self._connection:
+                self._connection.stop()
+        except Exception:
+            pass
+        self._set_connected(False)
+
+
 # Symbol -> contract searchText used by /api/Contract/search. The endpoint
 # returns active contracts matching the search; we pick the front-month
 # (activeContract=True) at connect() time.
@@ -223,6 +397,7 @@ class TopstepXClient:
         self._connected  = False
         self._last_error = None         # most recent error string for diagnostics
         self._stream     = None         # TopstepXMarketStream (SignalR) — set by connect()
+        self._user_stream = None        # TopstepXUserStream (SignalR) — set by connect()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -302,9 +477,21 @@ class TopstepXClient:
                 log.exception('TopstepX SignalR setup error — falling back to REST polling')
                 self._stream = None
 
-            log.info('TopstepX connected (account=%s, contracts=%d, stream=%s)',
+            # Start the SignalR USER stream (real-time fills/positions/account).
+            # Optional/additive: REST balance + position checks still work without it.
+            try:
+                self._user_stream = TopstepXUserStream(get_token=lambda: self._token,
+                                                       account_id=self.account_id)
+                if not self._user_stream.connect():
+                    self._user_stream = None
+            except Exception:
+                log.exception('TopstepX user stream setup error')
+                self._user_stream = None
+
+            log.info('TopstepX connected (account=%s, contracts=%d, market=%s, user=%s)',
                      self.account_id, len(self._contracts),
-                     'live' if self._stream else 'REST')
+                     'live' if self._stream else 'REST',
+                     'live' if self._user_stream else 'off')
             return True
         except httpx.HTTPError as e:
             self._last_error = f'HTTP error: {e}'
@@ -316,16 +503,34 @@ class TopstepXClient:
             return False
 
     def disconnect(self):
-        if self._stream:
-            try:
-                self._stream.stop()
-            except Exception:
-                pass
+        for s in (self._stream, self._user_stream):
+            if s:
+                try:
+                    s.stop()
+                except Exception:
+                    pass
         try:
             self._http.close()
         except Exception:
             pass
         self._connected = False
+
+    # ------------------------------------------------------------------ #
+    # Real-time user-stream accessors (instant fills/positions/account)
+    # ------------------------------------------------------------------ #
+    def get_live_account(self):
+        """Real-time {balance, canTrade} from the user stream, or None if unavailable."""
+        return self._user_stream.get_account() if self._user_stream else None
+
+    def get_live_position(self, symbol: str):
+        """Real-time position for `symbol` from the user stream, or None."""
+        if not self._user_stream:
+            return None
+        return self._user_stream.get_position(self._contracts.get(symbol, ''))
+
+    def recent_fills(self, n: int = 20):
+        """Recent fills (newest first) from the user stream — for the dashboard."""
+        return self._user_stream.recent_fills(n) if self._user_stream else []
 
     def _ensure_token(self):
         """Refresh the session token if it's near expiry."""
