@@ -94,9 +94,15 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
                 pass
 
         if reason:
-            # Record the ACTUAL market price at the moment the exit triggered, not the
-            # theoretical stop/target level. Live market orders fill with slippage —
-            # current_price (the live quote that tripped the exit) is much closer to the
-            # real fill than the stop/target. In sim this is also more honest.
+            # LIVE: record the real quote that tripped the exit (close_trade then reads
+            # the actual broker fill). SIM: a real bracket fills a stop at ~the stop and
+            # a target at ~the target — NOT at a spiked quote. Snapping sim fills to the
+            # stop/target level prevents overnight wicks from recording fake huge losses
+            # (the -$1,035 NQ artifact on 2026-05-20 where a 3pt stop "filled" 51pts away).
             exit_price = current_price
+            if sim:
+                if reason == 'stop_loss':
+                    exit_price = stop
+                elif reason == 'profit_target':
+                    exit_price = target
             close_trade(client, db_path, trade, exit_price, reason, sim=sim)

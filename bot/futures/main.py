@@ -381,6 +381,10 @@ def job_scan(client):
                 blocked_by = f"RSI {rsi:.0f} >= {RISK_RULES['reversion_rsi_short_max']} (up-momentum too strong to short)"
                 log.info('%s short blocked — %s', symbol, blocked_by)
                 direction = None
+            elif direction == 'long' and rsi is not None and rsi >= RISK_RULES['reversion_rsi_long_max']:
+                blocked_by = f"RSI {rsi:.0f} >= {RISK_RULES['reversion_rsi_long_max']} (overbought rip — long top risk)"
+                log.info('%s long blocked — %s', symbol, blocked_by)
+                direction = None
 
             # Day-type filter — block reversion entries on trend/gap days
             dt_block = day_type_blocks_direction(_day_type_cache.get(symbol), direction or '')

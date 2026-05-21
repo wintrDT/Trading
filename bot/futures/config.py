@@ -68,6 +68,10 @@ RISK_RULES = {
     # RSI is high (fighting strong up-momentum). Longs are profitable across the RSI
     # range (deep-oversold AND momentum-recovery), so they get NO RSI block.
     'reversion_rsi_short_max': 60,  # skip reversion SHORT if RSI at/above this (up-momentum too strong)
+    # Long ceiling set HIGH (not the earlier wrong 60). Longs profit through RSI 75
+    # (60-75 = +$60/trade lifetime) but collapse above it: RSI 75-85 = -$78/trade,
+    # 85-101 = -$109 at 12% WR (buying the top of an overbought rip). Block >= 80.
+    'reversion_rsi_long_max':  80,  # skip reversion LONG if RSI at/above this (overbought rip, top risk)
 }
 
 # TopStep funded/eval account rules. The bot enforces these BEFORE TopStep does
