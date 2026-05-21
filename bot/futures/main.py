@@ -159,9 +159,11 @@ def _now_minute():
 
 
 def _reset_daily_state():
-    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update, _vwap_bars_cache
+    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update, _vwap_bars_cache, _dd_halted, _dd_notified_date
     _vwap_last_update = {}   # force a fresh real-VWAP rebuild from the new session's bars
     _vwap_bars_cache  = {}
+    _dd_halted = False       # re-evaluate the drawdown halt next session (peak persists)
+    _dd_notified_date = ''
     _vwap_states    = {s: VWAPState()        for s in SYMBOLS}
     _orb_states     = {s: ORBState()         for s in SYMBOLS}
     _channel_states = {s: ChannelState()     for s in SYMBOLS}
@@ -212,6 +214,67 @@ def _rebuild_real_vwap(client, symbol, vwap_state):
         except (KeyError, TypeError, ValueError):
             continue
     return bars if fed > 0 else None
+
+
+def _topstep_drawdown_halt(client, today: str) -> bool:
+    """Live trailing-drawdown guard. Halts NEW entries before the account breaches
+    its trailing max-loss floor (or if it's already locked, or the Combine profit
+    target is reached). Polls the live balance ~every 30s and tracks a persistent
+    high-water mark; the halt decision is cached for the session. Returns True to halt.
+    """
+    global _dd_last_check_ts, _dd_halted, _dd_notified_date
+    if _dd_halted:
+        return True
+    import time as _t
+    # Instant breach via the user stream (in-memory, every scan) if available.
+    if hasattr(client, 'get_live_account'):
+        la = client.get_live_account()
+        if la and la.get('canTrade') is False:
+            _dd_halted = True
+            _notify_halt(today, f"account locked (canTrade=False, balance=${la.get('balance', 0):.0f})")
+            return True
+    # Throttle the REST balance poll to ~30s.
+    if (_t.time() - _dd_last_check_ts) < 30:
+        return _dd_halted
+    _dd_last_check_ts = _t.time()
+    try:
+        bal = client.get_account_balance()
+    except Exception:
+        log.exception('Drawdown guard balance fetch failed — not halting on transient error')
+        return _dd_halted
+    net_liq   = float(bal.get('netLiquidatingValue', 0))
+    can_trade = bal.get('canTrade', True)
+
+    start    = TOPSTEP_RULES.get('start_balance', 50000.0)
+    trailing = TOPSTEP_RULES.get('trailing_drawdown', 2000.0)
+    buffer   = TOPSTEP_RULES.get('trailing_halt_buffer', 400.0)
+    target   = TOPSTEP_RULES.get('profit_target_total', 0.0)
+
+    # Persistent high-water mark (trailing floor follows the peak).
+    peak = float(get_setting(FUTURES_DB_PATH, 'topstep_peak_balance', 0) or 0)
+    if peak <= 0:
+        peak = max(net_liq, start)
+    if net_liq > peak:
+        peak = net_liq
+    set_setting(FUTURES_DB_PATH, 'topstep_peak_balance', str(peak))
+
+    from bot.futures.risk import drawdown_halt_decision
+    halt, reason = drawdown_halt_decision(net_liq, peak, can_trade, start, trailing, buffer, target)
+    if halt:
+        _dd_halted = True
+        _notify_halt(today, reason)
+    return halt
+
+
+def _notify_halt(today: str, reason: str):
+    global _dd_notified_date
+    log.warning('TRADING HALTED — %s', reason)
+    if _dd_notified_date != today:
+        try:
+            notifier.notify_system(f'Trading HALTED — {reason}', level='critical')
+        except Exception:
+            pass
+        _dd_notified_date = today
 
 
 def _record_session_close():
@@ -287,6 +350,16 @@ def job_scan(client):
 
     today_date  = datetime.now(ET).strftime('%Y-%m-%d')
     now_iso     = datetime.now(ET).isoformat()
+
+    # Live trailing-drawdown guard — block NEW entries before the account breaches
+    # its trailing max-loss floor (checked at entry time so the dashboard keeps
+    # updating). Sim is exempt. Throttled balance poll lives inside the guard.
+    dd_halted = False
+    if not sim and client is not None and hasattr(client, 'get_account_balance'):
+        try:
+            dd_halted = _topstep_drawdown_halt(client, today_date)
+        except Exception:
+            log.exception('Drawdown guard error — not halting')
     event_times = get_today_event_times(FUTURES_DB_PATH, today_date)
     from bot.futures.risk import news_regime
     news_state = news_regime(now_iso, event_times,
@@ -684,6 +757,9 @@ def job_scan(client):
 
         if trading_paused:
             log.info('Trading paused — skipping entry for %s %s', symbol, signal)
+            continue
+        if dd_halted:
+            log.warning('Drawdown halt active — skipping entry for %s %s', symbol, signal)
             continue
 
         # PERSISTENT REGIME GATE — blocks fighting a sustained one-sided move.

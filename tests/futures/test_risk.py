@@ -1,6 +1,40 @@
 # tests/futures/test_risk.py
 import pytest
-from bot.futures.risk import calc_stop_price, calc_target_price, calc_pnl, is_daily_loss_limit_hit, is_news_blackout, should_exit
+from bot.futures.risk import (
+    calc_stop_price, calc_target_price, calc_pnl, is_daily_loss_limit_hit,
+    is_news_blackout, should_exit, trailing_floor, drawdown_halt_decision,
+)
+
+
+def test_trailing_floor_locks_at_start():
+    assert trailing_floor(peak=50000, trailing=2000, start=50000) == 48000
+    assert trailing_floor(peak=51000, trailing=2000, start=50000) == 49000
+    assert trailing_floor(peak=52000, trailing=2000, start=50000) == 50000   # locked
+    assert trailing_floor(peak=53000, trailing=2000, start=50000) == 50000   # stays locked
+
+
+def test_drawdown_halt_when_locked():
+    halt, reason = drawdown_halt_decision(49000, 50000, can_trade=False,
+                                          start=50000, trailing=2000, buffer=400)
+    assert halt is True and 'locked' in reason
+
+
+def test_drawdown_halt_within_buffer():
+    # peak 50k -> floor 48000; halt at <= 48400 (400 buffer)
+    halt, _ = drawdown_halt_decision(48350, 50000, True, 50000, 2000, 400)
+    assert halt is True
+    halt2, _ = drawdown_halt_decision(48600, 50000, True, 50000, 2000, 400)
+    assert halt2 is False        # still $200 above the halt line
+
+
+def test_drawdown_no_halt_with_room():
+    halt, reason = drawdown_halt_decision(49693, 50000, True, 50000, 2000, 400)
+    assert halt is False and reason is None
+
+
+def test_drawdown_halt_on_profit_target():
+    halt, reason = drawdown_halt_decision(53050, 53050, True, 50000, 2000, 400, profit_target=3000)
+    assert halt is True and 'profit target' in reason
 
 def test_stop_price_long():
     stop = calc_stop_price('long', entry=5000.25, stop_ticks=8, tick=0.25)

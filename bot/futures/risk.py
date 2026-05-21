@@ -21,6 +21,34 @@ def is_daily_loss_limit_hit(realized: float, limit: float) -> bool:
     return realized <= -abs(limit)
 
 
+def trailing_floor(peak: float, trailing: float, start: float) -> float:
+    """TopStep trailing max-loss floor: `trailing` below the peak, but it stops
+    trailing (locks) once it reaches the starting balance — so it never rises above
+    `start`. e.g. 50k start, $2000 trailing: peak 50k -> 48k, peak 51k -> 49k,
+    peak 52k+ -> locked at 50k.
+    """
+    return min(peak - trailing, start)
+
+
+def drawdown_halt_decision(net_liq: float, peak: float, can_trade: bool,
+                           start: float, trailing: float, buffer: float,
+                           profit_target: float = 0.0):
+    """Pure decision: should the bot HALT new entries? Returns (halt, reason).
+
+    Halts if the account is locked, if equity is within `buffer` of the trailing
+    floor (so we stop BEFORE breaching), or if the Combine profit target is reached.
+    """
+    if not can_trade:
+        return True, f'account locked (canTrade=False, balance=${net_liq:.0f})'
+    floor = trailing_floor(peak, trailing, start)
+    if net_liq <= floor + buffer:
+        return True, (f'within ${buffer:.0f} of trailing floor '
+                      f'(balance=${net_liq:.0f}, floor=${floor:.0f}, peak=${peak:.0f})')
+    if profit_target and net_liq >= start + profit_target:
+        return True, f'Combine profit target reached (+${net_liq - start:.0f}) — banking it'
+    return False, None
+
+
 def is_news_blackout(now_iso: str, blackout_minutes: int, news_times: list) -> bool:
     now_dt = datetime.fromisoformat(now_iso.replace('Z', '+00:00'))
     if now_dt.tzinfo is None:
