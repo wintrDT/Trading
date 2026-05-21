@@ -551,6 +551,36 @@
     <% } %>
     </div>
 
+    <!-- Recent Fills (real-time from TopStep User Hub) -->
+    <% if (typeof recentFills !== 'undefined' && recentFills && recentFills.length) { %>
+    <div class="card" style="margin-bottom:1.25rem;">
+      <p class="sect-hdr">Recent Fills <span style="font-size:0.7rem;color:var(--text2);font-weight:400;">· live from TopStep</span></p>
+      <div style="overflow-x:auto;">
+        <table class="opt-table">
+          <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Size</th><th>Price</th><th>P&amp;L</th><th>Fees</th></tr></thead>
+          <tbody>
+          <% recentFills.slice(0,12).forEach(f => {
+               const sideColor = f.side === 'buy' ? '#00d4a0' : '#ff4f4f';
+               const pnlColor = f.pnl == null ? 'var(--text2)' : (f.pnl >= 0 ? '#00d4a0' : '#ff4f4f');
+               const sym = (f.contractId||'').includes('ENQ') ? 'NQ' : ((f.contractId||'').includes('EP') ? 'ES' : ((f.contractId||'').split('.').pop()||'—'));
+               const tt = f.ts ? new Date(f.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+          %>
+            <tr>
+              <td style="color:var(--text2);font-family:'Space Mono',monospace;"><%= tt %></td>
+              <td style="font-weight:600;"><%= sym %></td>
+              <td style="color:<%= sideColor %>;font-weight:600;"><%= (f.side||'').toUpperCase() %></td>
+              <td><%= f.size != null ? f.size : '—' %></td>
+              <td style="font-family:'Space Mono',monospace;"><%= f.price != null ? Number(f.price).toFixed(2) : '—' %></td>
+              <td style="color:<%= pnlColor %>;font-family:'Space Mono',monospace;"><%= f.pnl != null ? (f.pnl>=0?'+':'')+'$'+Number(f.pnl).toFixed(2) : '—' %></td>
+              <td style="color:var(--text2);font-family:'Space Mono',monospace;"><%= f.fees != null ? '$'+Number(f.fees).toFixed(2) : '—' %></td>
+            </tr>
+          <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <% } %>
+
     <!-- Open Positions -->
     <div id="live-open-positions" class="card" style="margin-bottom:1.25rem;">
       <p class="sect-hdr">Open Positions</p>

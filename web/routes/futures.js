@@ -94,6 +94,7 @@ router.get('/', requireAuth, (req, res) => {
 
   let marketStatus = null;
   let tradingPaused = false;
+  let recentFills = [];
   if (botOnline) {
     const db2 = getDb();
     if (db2) {
@@ -102,6 +103,8 @@ router.get('/', requireAuth, (req, res) => {
         if (row) marketStatus = JSON.parse(row.value);
         const pauseRow = db2.prepare("SELECT value FROM futures_settings WHERE key='trading_paused'").get();
         if (pauseRow) tradingPaused = pauseRow.value === 'true';
+        const fillsRow = db2.prepare("SELECT value FROM futures_settings WHERE key='recent_fills'").get();
+        if (fillsRow) { try { recentFills = JSON.parse(fillsRow.value) || []; } catch (_) {} }
       } catch (_) {}
       finally { db2.close(); }
     }
@@ -125,6 +128,7 @@ router.get('/', requireAuth, (req, res) => {
     accountSnap,
     botOnline,
     marketStatus,
+    recentFills,
     netLiq,
     tradingPaused,
     todayPnl:   botOnline ? todayPnl   : null,
