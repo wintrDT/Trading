@@ -40,7 +40,7 @@ RISK_RULES = {
     'stop_ticks': 8,
     'target_ticks': 16,
     'max_contracts': 2,
-    'daily_profit_target': 3000.0,  # bank the day if +$3000 realized — don't give a big day back
+    'daily_profit_target': 0,       # DISABLED (paper trading) — 0 makes the `if profit_target` guard a no-op so the bot keeps trading all session for data. Restore to 3000 before going live.
     'news_blackout_minutes': 5,
     'trade_timeout_minutes': 30,
     'cooldown_minutes': 2,  # base re-entry wait per symbol (x3 after a stop_loss) — cuts churn/fees
