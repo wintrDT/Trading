@@ -461,6 +461,42 @@ class TopstepXClient:
         # Path 2: REST History fallback
         return self._fetch_prices_rest(symbols)
 
+    def get_bars(self, symbol: str, start_iso: str, end_iso: str, limit: int = 1500) -> list:
+        """Return completed 1-min bars [{t,o,h,l,c,v}, ...] for `symbol` in [start,end].
+
+        Used to build real volume-weighted VWAP (bars carry volume; the live tick
+        stream does not). Partial/forming bar excluded so VWAP isn't jumpy.
+        """
+        if not self._connected:
+            return []
+        self._ensure_token()
+        contract_id = self._contracts.get(symbol)
+        if not contract_id:
+            return []
+        for live_flag in (False, True):
+            try:
+                with self._lock:
+                    resp = self._http.post('/api/History/retrieveBars', json={
+                        'contractId':        contract_id,
+                        'live':              live_flag,
+                        'startTime':         start_iso,
+                        'endTime':           end_iso,
+                        'unit':              2,   # minutes
+                        'unitNumber':        1,
+                        'limit':             limit,
+                        'includePartialBar': False,
+                    })
+                if resp.status_code != 200:
+                    continue
+                payload = resp.json()
+                bars = payload.get('bars', []) if isinstance(payload, dict) else payload
+                if bars:
+                    return bars
+            except Exception:
+                log.exception('TopstepX get_bars failed for %s (live=%s)', symbol, live_flag)
+                continue
+        return []
+
     def _fetch_prices_rest(self, symbols: list) -> dict:
         """REST History bar polling. Used as fallback when SignalR isn't streaming.
 

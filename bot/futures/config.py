@@ -103,6 +103,14 @@ SYMBOL_MAX_CONTRACTS = {
 
 ENABLE_TREND_STRATEGY = True
 
+# Real volume-weighted VWAP. When True, VWAP is rebuilt each ~60s from 1-min bar
+# volume (the institutional anchor) instead of an unweighted price average fed
+# volume=1 per scan. Requires a broker client exposing get_bars(); falls back to
+# the unweighted average if bars aren't available. NOTE: deviation thresholds
+# (SYMBOL_VWAP_PCT, tuned devs) were fit against the old proxy — watch paper
+# dev_pct distribution after enabling and recalibrate if needed.
+USE_REAL_VWAP = True
+
 # Shorts have a much weaker edge than longs (lifetime exp +$17.6 vs +$59/trade)
 # in this generally-bullish regime. Require shorts to be more extended from VWAP
 # than longs before entering — a higher bar filters out marginal counter-rallies.

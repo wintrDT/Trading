@@ -13,6 +13,7 @@ from bot.futures.config import (
     AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS, BLOCKED_HOURS_ET,
     TOPSTEP_RULES, SYMBOL_MAX_CONTRACTS,
     ENABLE_TREND_STRATEGY, SHORT_DEV_MULTIPLIER, STRONG_TREND_DAY_TYPES,
+    USE_REAL_VWAP,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_daily_pnl_range, get_setting, set_setting,
@@ -51,6 +52,7 @@ _last_price:     dict = {}   # symbol -> last scanned price (used for EOD sessio
 _consec_below_vwap: dict = {}  # symbol -> count of consecutive scans price < VWAP (regime gate)
 _consec_above_vwap: dict = {}  # symbol -> count of consecutive scans price > VWAP
 _daily_profit_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate profit-target Telegram pings
+_vwap_last_update: dict = {}     # symbol -> epoch of last real-VWAP rebuild (throttle to ~60s)
 _dd_last_check_ts: float = 0.0   # epoch — throttles the live TopStep balance/canTrade poll
 _dd_halted:        bool  = False # cached: account locked or near the trailing-DD floor (halt this session)
 _dd_notified_date: str   = ''    # 'YYYY-MM-DD' — prevents duplicate drawdown-halt pings
@@ -155,7 +157,8 @@ def _now_minute():
 
 
 def _reset_daily_state():
-    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache
+    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update
+    _vwap_last_update = {}   # force a fresh real-VWAP rebuild from the new session's bars
     _vwap_states    = {s: VWAPState()        for s in SYMBOLS}
     _orb_states     = {s: ORBState()         for s in SYMBOLS}
     _channel_states = {s: ChannelState()     for s in SYMBOLS}
@@ -165,6 +168,46 @@ def _reset_daily_state():
     _peak_dev       = {}
     _day_type_cache = {}
     log.info('Daily state reset — VWAP, ORB, channel, SMA, RSI, volatility, day-type, and pending entries cleared')
+
+
+def _session_open_utc():
+    """Start of the current futures session (18:00 ET) as a UTC datetime — the
+    anchor for session VWAP. Matches the 18:00 ET daily reset."""
+    from datetime import timedelta as _td
+    now_et = datetime.now(ET)
+    anchor = now_et.replace(hour=18, minute=0, second=0, microsecond=0)
+    if now_et < anchor:
+        anchor -= _td(days=1)
+    return anchor.astimezone(timezone.utc)
+
+
+def _rebuild_real_vwap(client, symbol, vwap_state) -> bool:
+    """Rebuild the session VWAP from real 1-min bar volume since the session open.
+
+    Rebuilds from scratch each call (reset + feed all completed bars) so the VWAP
+    is always the true session figure with no drift or double-counting. Returns
+    True if it populated from bars, False if no bars (caller keeps the fallback).
+    """
+    now = datetime.now(timezone.utc)
+    start = _session_open_utc()
+    bars = client.get_bars(symbol,
+                           start.isoformat().replace('+00:00', 'Z'),
+                           now.isoformat().replace('+00:00', 'Z'))
+    if not bars:
+        return False
+    vwap_state.reset()
+    fed = 0
+    for b in bars:
+        try:
+            vol = float(b.get('v', 0) or 0)
+            if vol <= 0:
+                continue
+            typical = (float(b['h']) + float(b['l']) + float(b['c'])) / 3.0
+            vwap_state.add_bar(price=typical, volume=vol)
+            fed += 1
+        except (KeyError, TypeError, ValueError):
+            continue
+    return fed > 0
 
 
 def _record_session_close():
@@ -292,7 +335,22 @@ def job_scan(client):
         rsi_state.update(price)
         vol_state.update(price)
         vol_state.update_baseline(price)
-        vwap_state.add_bar(price=price, volume=1)
+        # VWAP: real volume-weighted (rebuilt from 1-min bars, ~60s cadence) when a
+        # bar source is available; otherwise the unweighted per-scan average.
+        # Once real VWAP is active for a symbol we never feed volume=1 again this
+        # session (a failed rebuild keeps the last good VWAP rather than corrupting it).
+        if USE_REAL_VWAP and client is not None and hasattr(client, 'get_bars'):
+            import time as _t
+            if _t.time() - _vwap_last_update.get(symbol, 0) >= 55:
+                try:
+                    if _rebuild_real_vwap(client, symbol, vwap_state):
+                        _vwap_last_update[symbol] = _t.time()
+                except Exception:
+                    log.exception('Real-VWAP rebuild failed for %s — keeping prior VWAP', symbol)
+            if symbol not in _vwap_last_update:   # never built yet — bridge with unweighted
+                vwap_state.add_bar(price=price, volume=1)
+        else:
+            vwap_state.add_bar(price=price, volume=1)
         _last_price[symbol] = price
 
         if not orb_state._ready and now_min >= orb_end_min:
