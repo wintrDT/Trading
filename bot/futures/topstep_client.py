@@ -47,6 +47,8 @@ class TopstepXMarketStream:
         self._get_token = get_token   # callable returning current bearer token
         self._lock       = threading.Lock()
         self._quotes     = {}          # contractId -> last price float
+        self._bbo        = {}          # contractId -> (bestBid, bestAsk) for trade classification
+        self._cvd        = {}          # contractId -> deque[(epoch, signed_volume)] rolling order flow
         self._connection = None
         self._connected  = False
         self._subscribed = set()       # contract ids we want subscribed
@@ -79,6 +81,9 @@ class TopstepXMarketStream:
             # Try multiple event names — different ProjectX versions use different ones
             for event in ('GatewayQuote', 'Quote', 'OnQuote', 'contractQuote'):
                 self._connection.on(event, self._on_quote)
+            # Time & sales → cumulative volume delta (order flow)
+            for event in ('GatewayTrade', 'Trade', 'OnTrade'):
+                self._connection.on(event, self._on_trade)
 
             self._connection.on_open(self._on_open)
             self._connection.on_close(self._on_close)
@@ -131,20 +136,79 @@ class TopstepXMarketStream:
             if not (contract_id and isinstance(payload, dict)):
                 return
 
+            bid = payload.get('bestBid') or payload.get('bid')
+            ask = payload.get('bestAsk') or payload.get('ask')
             price = (payload.get('lastPrice') or payload.get('last')
                      or payload.get('price')  or payload.get('lastTradePrice'))
-            if price is None:
-                # Some feeds publish bid/ask only — average them as fallback
-                bid = payload.get('bid'); ask = payload.get('ask')
-                if bid and ask:
-                    price = (float(bid) + float(ask)) / 2.0
+            if price is None and bid and ask:
+                price = (float(bid) + float(ask)) / 2.0
 
-            if price is not None:
-                with self._lock:
+            with self._lock:
+                if bid and ask:
+                    self._bbo[contract_id] = (float(bid), float(ask))
+                if price is not None:
                     self._quotes[contract_id] = float(price)
                     self._last_tick_at = time.time()
         except Exception:
             log.exception('TopstepX quote handler error: %s', args)
+
+    def _on_trade(self, args):
+        """Time & sales handler -> cumulative volume delta (order flow).
+
+        GatewayTrade shape: [contractId, [{price, volume, type, ...}, ...]].
+        Aggressor: a print at/above the ask is a buy (+vol), at/below the bid is a
+        sell (-vol); falls back to the 'type' field (0=buy, 1=sell) before a quote.
+        """
+        try:
+            contract_id = None
+            trades = None
+            if isinstance(args, list) and len(args) >= 2:
+                contract_id = str(args[0]); trades = args[1]
+            elif isinstance(args, list) and len(args) == 1:
+                trades = args[0]
+            if isinstance(trades, dict):
+                trades = [trades]
+            if not (contract_id and isinstance(trades, list)):
+                return
+            now = time.time()
+            with self._lock:
+                bid, ask = self._bbo.get(contract_id, (None, None))
+                dq = self._cvd.setdefault(contract_id, deque(maxlen=20000))
+                for t in trades:
+                    if not isinstance(t, dict):
+                        continue
+                    try:
+                        px = float(t.get('price'))
+                        vol = float(t.get('volume', 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if vol <= 0:
+                        continue
+                    if ask and px >= ask:
+                        signed = vol
+                    elif bid and px <= bid:
+                        signed = -vol
+                    elif t.get('type') == 0:
+                        signed = vol
+                    elif t.get('type') == 1:
+                        signed = -vol
+                    else:
+                        signed = 0.0
+                    if signed:
+                        dq.append((now, signed))
+                self._last_tick_at = now
+        except Exception:
+            log.exception('TopstepX trade handler error')
+
+    def cvd(self, contract_id: str, window_sec: int = 60) -> float:
+        """Net signed volume (buy-aggressor minus sell-aggressor) over the last window."""
+        cid = str(contract_id)
+        cutoff = time.time() - window_sec
+        with self._lock:
+            dq = self._cvd.get(cid)
+            if not dq:
+                return 0.0
+            return float(sum(v for ts, v in dq if ts >= cutoff))
 
     def subscribe(self, contract_id: str):
         with self._lock:
@@ -153,15 +217,23 @@ class TopstepXMarketStream:
             self._subscribe_internal(contract_id)
 
     def _subscribe_internal(self, contract_id: str):
-        # Try several method names — ProjectX has used different ones across versions
+        # Quotes — try several method names (ProjectX varies across versions)
+        subbed = False
         for method in ('SubscribeContractQuotes', 'SubscribeContractMarketData', 'Subscribe'):
             try:
                 self._connection.send(method, [contract_id])
                 log.info('TopstepX subscribed %s via %s', contract_id, method)
-                return
+                subbed = True
+                break
             except Exception:
                 continue
-        log.error('TopstepX: no working subscribe method found for %s', contract_id)
+        if not subbed:
+            log.error('TopstepX: no working subscribe method found for %s', contract_id)
+        # Time & sales for order flow (best-effort; not all plans serve it)
+        try:
+            self._connection.send('SubscribeContractTrades', [contract_id])
+        except Exception:
+            pass
 
     def get_price(self, contract_id: str):
         with self._lock:
@@ -531,6 +603,16 @@ class TopstepXClient:
     def recent_fills(self, n: int = 20):
         """Recent fills (newest first) from the user stream — for the dashboard."""
         return self._user_stream.recent_fills(n) if self._user_stream else []
+
+    def get_order_flow(self, symbol: str, window_sec: int = 60):
+        """Net cumulative volume delta for `symbol` over the window (buy+ / sell-),
+        from the market stream's time & sales. None if the stream isn't running."""
+        if not self._stream:
+            return None
+        cid = self._contracts.get(symbol)
+        if not cid:
+            return None
+        return self._stream.cvd(cid, window_sec)
 
     def _ensure_token(self):
         """Refresh the session token if it's near expiry."""

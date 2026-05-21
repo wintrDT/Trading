@@ -318,6 +318,26 @@ def check_exhaustion_fade(bars: list, dev_pct: float | None, rsi: float | None,
     return None
 
 
+def check_orderflow_confirms(cvd: float | None, direction: str, min_delta: float = 0.0) -> bool:
+    """Order-flow (cumulative volume delta) confirmation, MOMENTUM semantics.
+
+    A long is confirmed when net aggressor flow is buying (cvd >= +min_delta); a short
+    when it's selling (cvd <= -min_delta). `cvd` is net signed volume over a recent
+    window (see TopstepXMarketStream.cvd). None -> no data -> don't block (True).
+
+    Note: this is momentum confirmation — appropriate for breakout/trend entries. For
+    *reversion* entries the useful order-flow read is exhaustion/divergence (selling
+    drying up at a low), not raw direction, so callers should choose deliberately.
+    """
+    if cvd is None:
+        return True
+    if direction == 'long':
+        return cvd >= min_delta
+    if direction == 'short':
+        return cvd <= -min_delta
+    return True
+
+
 def micro_momentum_blocks(channel_state: ChannelState, direction: str, lookback: int = 3) -> str | None:
     """Faster-reacting filter than the 20-bar SMA. Catches the case where SMA still
     says 'up' but price has been monotonically falling for the last few bars — the

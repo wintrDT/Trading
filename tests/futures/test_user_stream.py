@@ -1,5 +1,25 @@
 # tests/futures/test_user_stream.py
-from bot.futures.topstep_client import TopstepXUserStream
+from bot.futures.topstep_client import TopstepXUserStream, TopstepXMarketStream
+
+
+def test_cvd_classifies_aggressor_by_bbo():
+    ms = TopstepXMarketStream(get_token=lambda: 't')
+    ms._bbo['C1'] = (100.0, 100.25)          # bid / ask
+    ms._on_trade(['C1', [{'price': 100.25, 'volume': 5, 'type': 0}]])   # at ask -> buy +5
+    ms._on_trade(['C1', [{'price': 100.00, 'volume': 3, 'type': 1}]])   # at bid -> sell -3
+    assert ms.cvd('C1', window_sec=60) == 2.0
+
+
+def test_cvd_falls_back_to_type_without_quote():
+    ms = TopstepXMarketStream(get_token=lambda: 't')   # no bbo
+    ms._on_trade(['C2', [{'price': 50.0, 'volume': 4, 'type': 0}]])     # type 0 -> buy +4
+    ms._on_trade(['C2', [{'price': 50.0, 'volume': 1, 'type': 1}]])     # type 1 -> sell -1
+    assert ms.cvd('C2', window_sec=60) == 3.0
+
+
+def test_cvd_zero_when_no_trades():
+    ms = TopstepXMarketStream(get_token=lambda: 't')
+    assert ms.cvd('NONE') == 0.0
 
 
 def _stream():

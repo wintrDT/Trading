@@ -2,8 +2,16 @@
 import pytest
 from bot.futures.strategy import (
     VWAPState, calc_vwap, ORBState, check_vwap_signal, check_orb_signal,
-    check_exhaustion_fade,
+    check_exhaustion_fade, check_orderflow_confirms,
 )
+
+
+def test_orderflow_confirms_directional():
+    assert check_orderflow_confirms(500.0, 'long', min_delta=100) is True    # net buying confirms long
+    assert check_orderflow_confirms(-500.0, 'long', min_delta=100) is False  # net selling opposes long
+    assert check_orderflow_confirms(-500.0, 'short', min_delta=100) is True  # net selling confirms short
+    assert check_orderflow_confirms(50.0, 'short', min_delta=100) is False   # not enough selling
+    assert check_orderflow_confirms(None, 'long') is True                    # no data -> don't block
 
 
 def _bars(n=20, hi=100.0, lo=99.0, vol=1000.0):
