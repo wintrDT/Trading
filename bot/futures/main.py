@@ -13,7 +13,8 @@ from bot.futures.config import (
     AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS, BLOCKED_HOURS_ET,
     TOPSTEP_RULES, SYMBOL_MAX_CONTRACTS,
     ENABLE_TREND_STRATEGY, SHORT_DEV_MULTIPLIER, STRONG_TREND_DAY_TYPES,
-    USE_REAL_VWAP,
+    USE_REAL_VWAP, ENABLE_EXHAUSTION_FADE, EXH_FADE_LOOKBACK_BARS,
+    EXH_FADE_VOL_MULT, EXH_FADE_MIN_DEV_PCT,
 )
 from bot.futures.db import (
     init_db, insert_signal, get_daily_pnl, get_daily_pnl_range, get_setting, set_setting,
@@ -27,7 +28,7 @@ from bot.futures.strategy import (
     VWAPState, ORBState, ChannelState, SMAState, RSIState, VolatilityState,
     calc_vwap, check_vwap_signal, check_orb_signal, check_channel_signal, check_rsi_filter,
     classify_day_type, day_type_blocks_direction, compute_confidence,
-    micro_momentum_blocks, check_trend_pullback,
+    micro_momentum_blocks, check_trend_pullback, check_exhaustion_fade,
 )
 from bot.futures.db import get_market_bias
 from bot.futures.trader import place_entry
@@ -53,6 +54,7 @@ _consec_below_vwap: dict = {}  # symbol -> count of consecutive scans price < VW
 _consec_above_vwap: dict = {}  # symbol -> count of consecutive scans price > VWAP
 _daily_profit_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate profit-target Telegram pings
 _vwap_last_update: dict = {}     # symbol -> epoch of last real-VWAP rebuild (throttle to ~60s)
+_vwap_bars_cache:  dict = {}     # symbol -> last fetched 1-min bars (reused by exhaustion fade)
 _dd_last_check_ts: float = 0.0   # epoch — throttles the live TopStep balance/canTrade poll
 _dd_halted:        bool  = False # cached: account locked or near the trailing-DD floor (halt this session)
 _dd_notified_date: str   = ''    # 'YYYY-MM-DD' — prevents duplicate drawdown-halt pings
@@ -157,8 +159,9 @@ def _now_minute():
 
 
 def _reset_daily_state():
-    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update
+    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update, _vwap_bars_cache
     _vwap_last_update = {}   # force a fresh real-VWAP rebuild from the new session's bars
+    _vwap_bars_cache  = {}
     _vwap_states    = {s: VWAPState()        for s in SYMBOLS}
     _orb_states     = {s: ORBState()         for s in SYMBOLS}
     _channel_states = {s: ChannelState()     for s in SYMBOLS}
@@ -181,12 +184,13 @@ def _session_open_utc():
     return anchor.astimezone(timezone.utc)
 
 
-def _rebuild_real_vwap(client, symbol, vwap_state) -> bool:
+def _rebuild_real_vwap(client, symbol, vwap_state):
     """Rebuild the session VWAP from real 1-min bar volume since the session open.
 
     Rebuilds from scratch each call (reset + feed all completed bars) so the VWAP
     is always the true session figure with no drift or double-counting. Returns
-    True if it populated from bars, False if no bars (caller keeps the fallback).
+    the fetched bar list (truthy) on success, or None if no usable bars (caller
+    keeps the unweighted fallback). The bars are also reused by the exhaustion fade.
     """
     now = datetime.now(timezone.utc)
     start = _session_open_utc()
@@ -194,7 +198,7 @@ def _rebuild_real_vwap(client, symbol, vwap_state) -> bool:
                            start.isoformat().replace('+00:00', 'Z'),
                            now.isoformat().replace('+00:00', 'Z'))
     if not bars:
-        return False
+        return None
     vwap_state.reset()
     fed = 0
     for b in bars:
@@ -207,7 +211,7 @@ def _rebuild_real_vwap(client, symbol, vwap_state) -> bool:
             fed += 1
         except (KeyError, TypeError, ValueError):
             continue
-    return fed > 0
+    return bars if fed > 0 else None
 
 
 def _record_session_close():
@@ -343,8 +347,10 @@ def job_scan(client):
             import time as _t
             if _t.time() - _vwap_last_update.get(symbol, 0) >= 55:
                 try:
-                    if _rebuild_real_vwap(client, symbol, vwap_state):
+                    _bars = _rebuild_real_vwap(client, symbol, vwap_state)
+                    if _bars:
                         _vwap_last_update[symbol] = _t.time()
+                        _vwap_bars_cache[symbol] = _bars
                 except Exception:
                     log.exception('Real-VWAP rebuild failed for %s — keeping prior VWAP', symbol)
             if symbol not in _vwap_last_update:   # never built yet — bridge with unweighted
@@ -524,6 +530,24 @@ def job_scan(client):
             signal, strategy = orb_dir, 'orb'
             blocked_by = None
 
+        # Exhaustion fade — fade a fresh extreme made on BELOW-average volume, using
+        # the 1-min bars already fetched for the real VWAP. Fallback: only fires when
+        # nothing else signaled this scan. The low-volume condition is the edge.
+        if signal is None and ENABLE_EXHAUSTION_FADE:
+            _ef_bars = _vwap_bars_cache.get(symbol)
+            if _ef_bars:
+                ef_dir = check_exhaustion_fade(
+                    _ef_bars, dev_pct, rsi,
+                    lookback=EXH_FADE_LOOKBACK_BARS,
+                    vol_mult=EXH_FADE_VOL_MULT,
+                    min_dev_pct=EXH_FADE_MIN_DEV_PCT,
+                )
+                if ef_dir:
+                    signal, strategy = ef_dir, 'exh_fade'
+                    blocked_by = None
+                    log.info('%s exhaustion fade %s — fresh extreme on low volume (dev=%.2f%% rsi=%.0f)',
+                             symbol, ef_dir, dev_pct or 0, rsi or 0)
+
         # News bias is now a SOFT volatility input — not a hard block.
         # Trades against bias get half size (handled in trader.py via signal['bias_disagrees']).
         # Trades with bias keep normal size.
@@ -668,7 +692,7 @@ def job_scan(client):
         # it — otherwise the bot can never short a real reversal in an uptrend (the
         # missed-winner watched on 2026-05-20). The gate still guards other strategies.
         PERSISTENT_REGIME_BARS = 6
-        if strategy != 'vwap':
+        if strategy not in ('vwap', 'exh_fade'):
             if signal == 'long' and _consec_below_vwap.get(symbol, 0) >= PERSISTENT_REGIME_BARS:
                 log.warning('%s long BLOCKED — price below VWAP for %d scans (persistent downtrend)',
                             symbol, _consec_below_vwap[symbol])

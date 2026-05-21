@@ -111,6 +111,15 @@ ENABLE_TREND_STRATEGY = True
 # dev_pct distribution after enabling and recalibrate if needed.
 USE_REAL_VWAP = True
 
+# Strategy: Volume-Weighted Exhaustion Fade. Fades a fresh N-bar extreme that
+# printed on BELOW-average volume (a move with no fuel reverts toward VWAP); the
+# same extreme on rising volume is left alone. Uses the 1-min bars already fetched
+# for the real VWAP. Defaults are starting points — tune from paper data.
+ENABLE_EXHAUSTION_FADE = True
+EXH_FADE_LOOKBACK_BARS  = 20     # bars defining the "fresh extreme" window
+EXH_FADE_VOL_MULT       = 0.7    # extreme bar volume must be < this * 20-bar avg volume
+EXH_FADE_MIN_DEV_PCT    = 0.10   # price must be at least this % from VWAP to fade
+
 # Shorts have a much weaker edge than longs (lifetime exp +$17.6 vs +$59/trade)
 # in this generally-bullish regime. Require shorts to be more extended from VWAP
 # than longs before entering — a higher bar filters out marginal counter-rallies.

@@ -278,6 +278,46 @@ def check_trend_pullback(channel_state: ChannelState,
     return None
 
 
+def check_exhaustion_fade(bars: list, dev_pct: float | None, rsi: float | None,
+                          lookback: int = 20, vol_mult: float = 0.7,
+                          min_dev_pct: float = 0.10,
+                          rsi_high: float = 65.0, rsi_low: float = 35.0) -> str | None:
+    """Volume-weighted exhaustion fade.
+
+    Fade a fresh N-bar extreme that printed on BELOW-average volume — a move with
+    no fuel tends to snap back toward VWAP. The same extreme on rising volume is
+    real momentum and is NOT faded (the volume read is the whole edge).
+
+    bars: recent COMPLETED 1-min bars [{'h','l','c','v'}, ...], oldest -> newest.
+    Returns 'short' to fade a new high, 'long' to fade a new low, or None.
+    """
+    if not bars or len(bars) < lookback + 1:
+        return None
+    window = bars[-(lookback + 1):]
+    latest = window[-1]
+    prior  = window[:-1]
+    try:
+        hi  = float(latest['h']); lo = float(latest['l'])
+        vol = float(latest.get('v', 0) or 0)
+        prior_high = max(float(b['h']) for b in prior)
+        prior_low  = min(float(b['l']) for b in prior)
+        avg_vol    = sum(float(b.get('v', 0) or 0) for b in prior) / len(prior)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    if avg_vol <= 0 or vol >= vol_mult * avg_vol:
+        return None  # not a low-volume bar — no exhaustion signal
+
+    # New high on low volume, extended ABOVE VWAP, overbought -> fade SHORT
+    if (hi > prior_high and dev_pct is not None and dev_pct >= min_dev_pct
+            and (rsi is None or rsi >= rsi_high)):
+        return 'short'
+    # New low on low volume, extended BELOW VWAP, oversold -> fade LONG
+    if (lo < prior_low and dev_pct is not None and dev_pct <= -min_dev_pct
+            and (rsi is None or rsi <= rsi_low)):
+        return 'long'
+    return None
+
+
 def micro_momentum_blocks(channel_state: ChannelState, direction: str, lookback: int = 3) -> str | None:
     """Faster-reacting filter than the 20-bar SMA. Catches the case where SMA still
     says 'up' but price has been monotonically falling for the last few bars — the
