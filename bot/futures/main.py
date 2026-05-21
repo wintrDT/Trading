@@ -55,6 +55,7 @@ _consec_above_vwap: dict = {}  # symbol -> count of consecutive scans price > VW
 _daily_profit_notified_date: str = ''  # 'YYYY-MM-DD' — prevents duplicate profit-target Telegram pings
 _vwap_last_update: dict = {}     # symbol -> epoch of last real-VWAP rebuild (throttle to ~60s)
 _vwap_bars_cache:  dict = {}     # symbol -> last fetched 1-min bars (reused by exhaustion fade)
+_ref_levels_cache: dict = {}     # symbol -> session reference levels (prior-day/overnight), cached per session
 _dd_last_check_ts: float = 0.0   # epoch — throttles the live TopStep balance/canTrade poll
 _dd_halted:        bool  = False # cached: account locked or near the trailing-DD floor (halt this session)
 _dd_notified_date: str   = ''    # 'YYYY-MM-DD' — prevents duplicate drawdown-halt pings
@@ -159,11 +160,12 @@ def _now_minute():
 
 
 def _reset_daily_state():
-    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update, _vwap_bars_cache, _dd_halted, _dd_notified_date
+    global _vwap_states, _orb_states, _channel_states, _sma_states, _rsi_states, _vol_states, _peak_dev, _day_type_cache, _vwap_last_update, _vwap_bars_cache, _dd_halted, _dd_notified_date, _ref_levels_cache
     _vwap_last_update = {}   # force a fresh real-VWAP rebuild from the new session's bars
     _vwap_bars_cache  = {}
     _dd_halted = False       # re-evaluate the drawdown halt next session (peak persists)
     _dd_notified_date = ''
+    _ref_levels_cache = {}   # recompute prior-day/overnight levels for the new session
     _vwap_states    = {s: VWAPState()        for s in SYMBOLS}
     _orb_states     = {s: ORBState()         for s in SYMBOLS}
     _channel_states = {s: ChannelState()     for s in SYMBOLS}
@@ -685,9 +687,32 @@ def job_scan(client):
 
         orb_hi = orb_state.high if orb_state._ready and orb_state.high != float('-inf') else None
         orb_lo = orb_state.low  if orb_state._ready and orb_state.low  != float('inf')  else None
+        # Order flow (cumulative volume delta) + session reference levels for the dashboard
+        cvd = None
+        if client is not None and hasattr(client, 'get_order_flow'):
+            try:
+                cvd = client.get_order_flow(symbol, 60)
+            except Exception:
+                cvd = None
+        if symbol not in _ref_levels_cache and client is not None and hasattr(client, 'get_bars'):
+            try:
+                from bot.futures.levels import compute_reference_levels
+                _ref_levels_cache[symbol] = compute_reference_levels(client, symbol)
+            except Exception:
+                _ref_levels_cache[symbol] = None
+        levels = dict(_ref_levels_cache.get(symbol) or {})
+        try:
+            from bot.futures.levels import round_levels
+            levels['round'] = round_levels(price, symbol, n=1)
+        except Exception:
+            pass
+
         status_map[symbol] = {
             'price':      price,
             'vwap':       round(vwap, 2) if vwap else None,
+            'cvd':        round(cvd) if cvd is not None else None,
+            'levels':     levels,
+            'halted':     dd_halted,
             'dev_pct':    dev_pct,
             'threshold':  round((tuned_dev_long + tuned_dev_short) / 2, 4),
             'sma':        round(sma, 2) if sma else None,
@@ -797,6 +822,13 @@ def job_scan(client):
         set_setting(FUTURES_DB_PATH, 'market_status', _json.dumps(status_map))
     except Exception:
         pass
+
+    # Persist real-time fills (from the User Hub) for the dashboard fills panel.
+    if client is not None and hasattr(client, 'recent_fills'):
+        try:
+            set_setting(FUTURES_DB_PATH, 'recent_fills', _json.dumps(client.recent_fills(20)))
+        except Exception:
+            pass
 
 
 def job_manage(client):
