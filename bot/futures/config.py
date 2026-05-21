@@ -116,6 +116,14 @@ USE_REAL_VWAP = True
 # same extreme on rising volume is left alone. Uses the 1-min bars already fetched
 # for the real VWAP. Defaults are starting points — tune from paper data.
 ENABLE_EXHAUSTION_FADE = True
+
+# Native OCO bracket: place a server-side TARGET limit order linked (linkedOrderId)
+# to the protective stop, so the broker fills/cancels them as a pair (instant target
+# exits, not just the 5s synthetic loop). Verified the API accepts linkedOrderId.
+# DEFAULT OFF — opt-in after watching it on the eval account; the existing broker
+# stop + synthetic target + reconciliation remain the safe default. The manager's
+# reconciliation cancels any leftover bracket order as a backstop.
+ENABLE_BRACKET_ORDERS = False
 EXH_FADE_LOOKBACK_BARS  = 20     # bars defining the "fresh extreme" window
 EXH_FADE_VOL_MULT       = 0.7    # extreme bar volume must be < this * 20-bar avg volume
 EXH_FADE_MIN_DEV_PCT    = 0.10   # price must be at least this % from VWAP to fade

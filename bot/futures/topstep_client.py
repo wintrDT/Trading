@@ -898,6 +898,43 @@ class TopstepXClient:
                 raise RuntimeError(f'TopstepX stop order placed but no orderId in response: {data}')
             return {'orderId': str(order_id)}
 
+    def place_target_order(self, symbol: str, action: str, contracts: int,
+                           target_price: float, linked_order_id=None) -> dict:
+        """Place a resting server-side TARGET limit order (take-profit).
+
+        action is the CLOSING side: 'Sell' to take profit on a long, 'Buy' on a short.
+        Pass linked_order_id (the protective stop's id) to make them an OCO pair so the
+        broker cancels the sibling when one fills.
+        """
+        if not self._connected:
+            raise RuntimeError('TopstepX not connected')
+        self._ensure_token()
+        contract_id = self._contracts.get(symbol)
+        if not contract_id:
+            raise RuntimeError(f'TopstepX: no resolved contract for {symbol}')
+        side = _ORDER_SIDE_BUY if action == 'Buy' else _ORDER_SIDE_SELL
+        body = {
+            'accountId':  self.account_id,
+            'contractId': contract_id,
+            'type':       1,   # Limit
+            'side':       side,
+            'size':       int(contracts),
+            'limitPrice': round(float(target_price), 2),
+        }
+        if linked_order_id:
+            body['linkedOrderId'] = int(linked_order_id)
+        with self._lock:
+            resp = self._http.post('/api/Order/place', json=body)
+            if resp.status_code != 200:
+                raise RuntimeError(f'/api/Order/place (target) HTTP {resp.status_code}: {resp.text[:300]}')
+            data = resp.json()
+            if data.get('success') is False:
+                raise RuntimeError(f'TopstepX target order rejected: {data.get("errorMessage")}')
+            order_id = data.get('orderId') or data.get('id')
+            if not order_id:
+                raise RuntimeError(f'TopstepX target order placed but no orderId: {data}')
+            return {'orderId': str(order_id)}
+
     def cancel_order(self, order_id) -> bool:
         """Cancel a working order (e.g. the resting protective stop) by id.
 

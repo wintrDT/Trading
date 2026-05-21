@@ -1,7 +1,7 @@
 # bot/futures/trader.py
 import logging
 from datetime import datetime, timezone
-from bot.futures.config import TICK_INFO, RISK_RULES, SYMBOL_RISK, TOPSTEP_RULES
+from bot.futures.config import TICK_INFO, RISK_RULES, SYMBOL_RISK, TOPSTEP_RULES, ENABLE_BRACKET_ORDERS
 from bot.futures.risk import calc_stop_price, calc_target_price, calc_pnl
 from bot.futures.db import insert_trade, update_trade_closed, mark_signal_traded, get_open_trades, get_last_close_info
 from bot.futures import notifier
@@ -131,6 +131,7 @@ def place_entry(client, db_path, signal, contracts, sim=False):
     # instant price trips it, capping the loss near the real stop level. Best-effort:
     # if it fails we still have the synthetic stop, so the entry is not aborted.
     stop_order_id = None
+    target_order_id = None
     if not sim and hasattr(client, 'place_stop_order'):
         close_action = 'Sell' if direction == 'long' else 'Buy'
         try:
@@ -139,6 +140,16 @@ def place_entry(client, db_path, signal, contracts, sim=False):
             log.info('%s protective stop placed @ %.2f (order %s)', symbol, stop_price, stop_order_id)
         except Exception:
             log.exception('%s protective stop FAILED to place — relying on synthetic stop only', symbol)
+        # Optional OCO bracket: resting TARGET limit linked to the stop (opt-in).
+        if ENABLE_BRACKET_ORDERS and hasattr(client, 'place_target_order'):
+            try:
+                tgt_resp        = client.place_target_order(symbol, close_action, contracts,
+                                                            target_price, linked_order_id=stop_order_id)
+                target_order_id = tgt_resp.get('orderId')
+                log.info('%s OCO target placed @ %.2f (order %s, linked %s)',
+                         symbol, target_price, target_order_id, stop_order_id)
+            except Exception:
+                log.exception('%s OCO target FAILED — relying on synthetic target', symbol)
 
     trade_id = insert_trade(db_path, {
         'symbol':        symbol,
@@ -154,6 +165,7 @@ def place_entry(client, db_path, signal, contracts, sim=False):
         'entry_rsi':     signal.get('entry_rsi'),
         'entry_dev_pct': signal.get('entry_dev_pct'),
         'stop_order_id': stop_order_id,
+        'target_order_id': target_order_id,
     })
     if signal_id:
         try:
@@ -186,12 +198,14 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
         # Cancel the resting protective stop FIRST. If we flatten while it's still
         # working, a long's sell-stop (sitting below market) could later fill and
         # open a brand-new short. Cancel is benign if the stop already filled.
-        if hasattr(client, 'cancel_order') and trade.get('stop_order_id'):
-            try:
-                client.cancel_order(trade['stop_order_id'])
-            except Exception:
-                log.exception('Failed to cancel protective stop %s for trade id=%s',
-                              trade.get('stop_order_id'), trade['id'])
+        if hasattr(client, 'cancel_order'):
+            for _oid in (trade.get('stop_order_id'), trade.get('target_order_id')):
+                if _oid:
+                    try:
+                        client.cancel_order(_oid)
+                    except Exception:
+                        log.exception('Failed to cancel resting order %s for trade id=%s',
+                                      _oid, trade['id'])
         try:
             if hasattr(client, 'close_position'):
                 client.close_position(trade['symbol'])

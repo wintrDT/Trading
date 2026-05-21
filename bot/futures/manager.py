@@ -61,11 +61,13 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
                     except Exception:
                         log.exception('Reconcile fill lookup failed for %s id=%s', symbol, trade['id'])
                 if fill:
-                    if trade.get('stop_order_id') and hasattr(client, 'cancel_order'):
-                        try:
-                            client.cancel_order(trade['stop_order_id'])  # benign if already filled
-                        except Exception:
-                            pass
+                    if hasattr(client, 'cancel_order'):
+                        for _oid in (trade.get('stop_order_id'), trade.get('target_order_id')):
+                            if _oid:
+                                try:
+                                    client.cancel_order(_oid)  # benign if already filled
+                                except Exception:
+                                    pass
                     try:
                         update_trade_closed(db_path, trade['id'],
                                             close_price=fill['price'], close_reason='broker_stop',

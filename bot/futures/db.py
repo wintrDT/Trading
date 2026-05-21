@@ -115,6 +115,8 @@ def init_db(db_path):
             conn.execute("ALTER TABLE futures_trades ADD COLUMN max_adverse REAL")
         if 'stop_order_id' not in trade_cols:
             conn.execute("ALTER TABLE futures_trades ADD COLUMN stop_order_id TEXT")
+        if 'target_order_id' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN target_order_id TEXT")
 
 
 def get_setting(db_path, key, default=None):
@@ -143,12 +145,13 @@ def insert_signal(db_path, signal):
 def insert_trade(db_path, trade):
     sql = """
     INSERT INTO futures_trades (symbol, strategy, direction, entry_price, entry_ts,
-        stop_price, target_price, contracts, order_id, status, entry_rsi, entry_dev_pct, stop_order_id)
+        stop_price, target_price, contracts, order_id, status, entry_rsi, entry_dev_pct, stop_order_id, target_order_id)
     VALUES (:symbol, :strategy, :direction, :entry_price, :entry_ts,
-        :stop_price, :target_price, :contracts, :order_id, :status, :entry_rsi, :entry_dev_pct, :stop_order_id)
+        :stop_price, :target_price, :contracts, :order_id, :status, :entry_rsi, :entry_dev_pct, :stop_order_id, :target_order_id)
     """
     with _conn(db_path) as conn:
-        return conn.execute(sql, {'entry_rsi': None, 'entry_dev_pct': None, 'stop_order_id': None, **trade}).lastrowid
+        return conn.execute(sql, {'entry_rsi': None, 'entry_dev_pct': None,
+                                  'stop_order_id': None, 'target_order_id': None, **trade}).lastrowid
 
 
 def update_trade_price(db_path, trade_id, current_price, new_stop=None):

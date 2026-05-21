@@ -35,6 +35,34 @@ def test_place_entry_live_calls_api(tmp_db):
     trades = get_open_trades(tmp_db)
     assert trades[0]['stop_order_id'] == '123'
 
+def test_place_entry_places_oco_target_when_enabled(tmp_db, monkeypatch):
+    import bot.futures.trader as trader_mod
+    monkeypatch.setattr(trader_mod, 'ENABLE_BRACKET_ORDERS', True)
+    client = MagicMock()
+    client.place_order.return_value = {'orderId': 99}
+    client.get_open_position.return_value = None
+    client.place_stop_order.return_value = {'orderId': 'STOP1'}
+    client.place_target_order.return_value = {'orderId': 'TGT1'}
+    signal = {'symbol': 'ES', 'strategy': 'vwap', 'direction': 'long', 'price': 5000.0, 'signal_id': 1}
+    place_entry(client, tmp_db, signal, contracts=1, sim=False)
+    client.place_target_order.assert_called_once()           # OCO target placed
+    t = get_open_trades(tmp_db)[0]
+    assert t['stop_order_id'] == 'STOP1'
+    assert t['target_order_id'] == 'TGT1'
+
+
+def test_no_oco_target_when_disabled(tmp_db, monkeypatch):
+    import bot.futures.trader as trader_mod
+    monkeypatch.setattr(trader_mod, 'ENABLE_BRACKET_ORDERS', False)
+    client = MagicMock()
+    client.place_order.return_value = {'orderId': 99}
+    client.get_open_position.return_value = None
+    client.place_stop_order.return_value = {'orderId': 'STOP1'}
+    signal = {'symbol': 'ES', 'strategy': 'vwap', 'direction': 'long', 'price': 5000.0, 'signal_id': 1}
+    place_entry(client, tmp_db, signal, contracts=1, sim=False)
+    client.place_target_order.assert_not_called()            # default: no OCO target
+
+
 def test_no_duplicate_entry(tmp_db):
     client = MagicMock()
     client.place_order.return_value = {'orderId': 1}
