@@ -410,6 +410,12 @@
         <p class="sect-hdr" style="margin:0;">Market Status</p>
         <span style="font-size:0.72rem;color:var(--text2);">updated <%= ts %> · auto-refresh 15s</span>
       </div>
+      <% const _halted = symbols.some(sym => marketStatus[sym] && marketStatus[sym].halted); %>
+      <% if (_halted) { %>
+      <div style="background:rgba(255,79,79,0.14);border:1px solid rgba(255,79,79,0.4);border-radius:10px;padding:0.7rem 1rem;margin-bottom:0.9rem;color:#ff4f4f;font-weight:600;font-size:0.82rem;">
+        ⛔ Trading HALTED — drawdown guard active (account near its trailing floor, or locked). New entries blocked; open positions stay managed by their stops.
+      </div>
+      <% } %>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.9rem;">
         <% for (const sym of symbols) {
           const s = marketStatus[sym];
@@ -445,6 +451,20 @@
               <span style="color:var(--text2);">RSI <span style="color:<%= s.rsi != null && s.rsi > 70 ? '#f5a623' : s.rsi != null && s.rsi < 30 ? '#f5a623' : 'var(--text)' %>;font-weight:600;"><%= s.rsi != null ? s.rsi.toFixed(0) : '—' %></span></span>
               <span style="color:var(--text2);">Trend <span style="color:<%= trendColor %>;font-weight:600;"><%= trendArrow %> <%= s.trend || '—' %></span></span>
             </div>
+            <!-- Order flow (cumulative volume delta, 60s) -->
+            <% if (s.cvd != null) { const cvdColor = s.cvd > 0 ? '#00d4a0' : s.cvd < 0 ? '#ff4f4f' : 'var(--text2)'; %>
+            <div style="margin-top:0.4rem;font-size:0.72rem;color:var(--text2);">
+              Order flow <span style="color:<%= cvdColor %>;font-weight:700;font-family:'Space Mono',monospace;"><%= s.cvd > 0 ? '+' : '' %><%= s.cvd %></span>
+              <span style="color:<%= cvdColor %>;"><%= s.cvd > 0 ? '▲ buying' : s.cvd < 0 ? '▼ selling' : '— flat' %></span>
+            </div>
+            <% } %>
+            <!-- Session reference levels -->
+            <% if (s.levels && (s.levels.prior_day_high || s.levels.overnight_high)) { const lv = s.levels; %>
+            <div style="margin-top:0.35rem;font-size:0.68rem;color:var(--text2);line-height:1.6;">
+              <% if (lv.prior_day_high) { %>Prior day <span style="color:#ff4f4f;font-family:'Space Mono',monospace;"><%= lv.prior_day_low.toFixed(2) %></span> – <span style="color:#00d4a0;font-family:'Space Mono',monospace;"><%= lv.prior_day_high.toFixed(2) %></span><br><% } %>
+              <% if (lv.overnight_high) { %>Overnight <span style="color:#ff4f4f;font-family:'Space Mono',monospace;"><%= lv.overnight_low.toFixed(2) %></span> – <span style="color:#00d4a0;font-family:'Space Mono',monospace;"><%= lv.overnight_high.toFixed(2) %></span><% } %>
+            </div>
+            <% } %>
             <% if (s.day_type) {
                  const dtMap = {
                    trend_day_up:     {emoji:'⬆️',  label:'Trend Day Up',     color:'#00d4a0'},
