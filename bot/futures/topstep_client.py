@@ -199,8 +199,9 @@ _TOPSTEPX_SEARCH = {
 # Update this dict the day after rollover (typically ~8 days before contract expiry).
 
 # TopstepX order type / side enums (from swagger schema)
-_ORDER_TYPE_MARKET = 2     # 1=Limit, 2=Market, 3=Stop, 4=TrailingStop
-_ORDER_TYPE_STOP   = 3     # resting stop-market order (server-side protective stop)
+# ProjectX/TopstepX OrderType enum: 1=Limit, 2=Market, 3=StopLimit, 4=Stop, 5=TrailingStop
+_ORDER_TYPE_MARKET = 2     # confirmed working (entries fill live)
+_ORDER_TYPE_STOP   = 4     # stop-MARKET (was 3=StopLimit, which needs a limitPrice we don't send -> rejected)
 _ORDER_SIDE_BUY  = 0       # Bid (buyer)
 _ORDER_SIDE_SELL = 1       # Ask (seller)
 
