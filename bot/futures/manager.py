@@ -2,9 +2,10 @@
 import logging
 from datetime import datetime, timezone
 from bot.futures.config import RISK_RULES, TICK_INFO
-from bot.futures.db import get_open_trades, update_trade_price, update_trade_extremes
+from bot.futures.db import get_open_trades, update_trade_price, update_trade_extremes, update_trade_closed
 from bot.futures.risk import should_exit, calc_breakeven_stop, calc_trailing_stop
 from bot.futures.trader import close_trade
+from bot.futures import notifier
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,47 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
         direction = trade['direction']
         tick      = TICK_INFO.get(symbol, TICK_INFO['ES'])['tick']
         pv        = TICK_INFO.get(symbol, TICK_INFO['ES'])['point_value']
+
+        # --- Broker reconciliation (LIVE only) ---
+        # The protective broker stop (or a target/manual close at TopStep) can close
+        # the position independently of — and faster than — this 5s loop. When it
+        # does, the bot never placed that order, so without this it would keep the
+        # trade "open" and later stamp a fantasy fill (the +$140-vs-real-$125 bug on
+        # 2026-05-21). Detect a flat broker position and record TopStep's ACTUAL fill
+        # so the bot's books match TopStep. Only acts when a real closing fill is
+        # found, so a transient API "flat" reading can't false-close a live trade.
+        if (not sim and trade.get('order_id') not in ('SIM', 'UNKNOWN', None)
+                and hasattr(client, 'get_open_position') and hasattr(client, 'get_close_fill')):
+            try:
+                bpos = client.get_open_position(symbol)
+            except Exception:
+                bpos = {'size': -1}  # unknown — treat as still-open, do not reconcile
+            if bpos is None or bpos.get('size', 0) == 0:
+                entry_iso = (trade.get('entry_ts') or '').replace('+00:00', 'Z')
+                fill = None
+                if entry_iso:
+                    try:
+                        fill = client.get_close_fill(symbol, entry_iso, retries=1, delay=0.0)
+                    except Exception:
+                        log.exception('Reconcile fill lookup failed for %s id=%s', symbol, trade['id'])
+                if fill:
+                    if trade.get('stop_order_id') and hasattr(client, 'cancel_order'):
+                        try:
+                            client.cancel_order(trade['stop_order_id'])  # benign if already filled
+                        except Exception:
+                            pass
+                    try:
+                        update_trade_closed(db_path, trade['id'],
+                                            close_price=fill['price'], close_reason='broker_stop',
+                                            close_ts=datetime.now(timezone.utc).isoformat(),
+                                            pnl=fill['pnl'])
+                        log.info('Reconciled %s id=%s — broker closed @ %.2f pnl=$%.2f fees=$%.2f',
+                                 symbol, trade['id'], fill['price'], fill['pnl'], fill.get('fees', 0.0))
+                        notifier.notify_exit(symbol, direction, fill['pnl'], 'broker_stop',
+                                             entry, float(fill['price']))
+                    except ValueError:
+                        pass  # already closed elsewhere
+                    continue  # reconciled — skip synthetic management for this trade
 
         # MAE/MFE: track worst and best unrealized P&L the trade ever reached
         unrealized = (current_price - entry if direction == 'long' else entry - current_price) * trade['contracts'] * pv
