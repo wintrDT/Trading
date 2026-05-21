@@ -1,6 +1,6 @@
 # bot/futures/main.py
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from datetime import time as _Time
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -869,6 +869,37 @@ def job_snapshot(client):
         log.exception('Snapshot error')
 
 
+def job_backtest(client):
+    """Nightly backtest over recent history; stores a summary for the dashboard."""
+    if client is None or not hasattr(client, 'get_bars'):
+        return
+    try:
+        import json as _json
+        from bot.futures.backtest import fetch_history, run_backtest, sweep_dev_thresholds
+        out = {'ts': datetime.now(ET).isoformat(), 'days': 10, 'symbols': {}}
+        for sym in SYMBOLS:
+            bars = fetch_history(client, sym, days=10)
+            if not bars:
+                continue
+            res = run_backtest(bars, sym)
+            by_strat = {}
+            for st in ('vwap', 'exh_fade'):
+                ts = [t for t in res['trades'] if t['strategy'] == st]
+                if ts:
+                    pnl = sum(t['pnl'] for t in ts); w = sum(1 for t in ts if t['pnl'] > 0)
+                    by_strat[st] = {'n': len(ts), 'pnl': round(pnl), 'wr': round(w / len(ts) * 100)}
+            out['symbols'][sym] = {
+                'bars':  len(bars),
+                'stats': res['stats'],
+                'by_strategy': by_strat,
+                'sweep': sweep_dev_thresholds(bars, sym),
+            }
+        set_setting(FUTURES_DB_PATH, 'backtest_results', _json.dumps(out))
+        log.info('Backtest stored for %s', list(out['symbols'].keys()))
+    except Exception:
+        log.exception('Backtest job failed')
+
+
 def job_news():
     try:
         fh_key = get_setting(FUTURES_DB_PATH, 'finnhub_api_key', '')
@@ -972,6 +1003,7 @@ def main():
     def _manage():   job_manage(client)
     def _snapshot(): job_snapshot(client)
     def _reset():    _reset_daily_state()
+    def _backtest(): job_backtest(client)
 
     scheduler = BlockingScheduler(timezone=ET)
     scheduler.add_job(_scan,     IntervalTrigger(seconds=10, timezone=ET), id='scan')
@@ -988,6 +1020,11 @@ def main():
     )
     # Record session-close price for next session's day-type classifier (gap detection)
     scheduler.add_job(_record_session_close, CronTrigger(hour=16, minute=58, timezone=ET), id='session_close')
+    # Nightly backtest over recent history (stores a summary for the dashboard), plus
+    # one run ~30s after startup so the panel has data right away.
+    scheduler.add_job(_backtest, CronTrigger(hour=17, minute=15, timezone=ET), id='backtest')
+    scheduler.add_job(_backtest, 'date',
+                      run_date=datetime.now(ET) + timedelta(seconds=30), id='backtest_startup')
     # Auto-tuner DISABLED — it was learning from a mix of old/new strategy trades
     # and writing bad thresholds (tune_nq_long_dev=0.14 contributed to 7 consecutive
     # NQ long stop-outs). Re-enable only after we have 30+ clean trades per direction

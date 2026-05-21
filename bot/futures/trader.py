@@ -189,6 +189,7 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
     pnl         = calc_pnl(trade['direction'], trade['entry_price'], current_price,
                            trade['contracts'], point_value)
     close_price = current_price
+    fees        = None
 
     if not sim and trade.get('order_id') not in ('SIM', 'UNKNOWN', None):
         # Prefer flatten (closeContract) — guarantees the position is fully closed
@@ -231,6 +232,7 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
             if fill:
                 close_price = fill['price']
                 pnl         = fill['pnl']
+                fees        = fill.get('fees')
                 log.info('%s actual close fill %.2f pnl=$%.2f (quote was %.2f, est pnl=$%.2f, fees=$%.2f)',
                          trade['symbol'], close_price, pnl, current_price,
                          calc_pnl(trade['direction'], trade['entry_price'], current_price,
@@ -244,6 +246,7 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
             close_reason=reason,
             close_ts=datetime.now(timezone.utc).isoformat(),
             pnl=pnl,
+            fees=fees,
         )
     except ValueError:
         # Already closed (race with web manual-close) — broker is flat, nothing to do

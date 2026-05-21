@@ -117,6 +117,8 @@ def init_db(db_path):
             conn.execute("ALTER TABLE futures_trades ADD COLUMN stop_order_id TEXT")
         if 'target_order_id' not in trade_cols:
             conn.execute("ALTER TABLE futures_trades ADD COLUMN target_order_id TEXT")
+        if 'fees' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN fees REAL")
 
 
 def get_setting(db_path, key, default=None):
@@ -184,14 +186,14 @@ def update_trade_extremes(db_path, trade_id, max_fav, max_adv):
         )
 
 
-def update_trade_closed(db_path, trade_id, close_price, close_reason, close_ts, pnl):
+def update_trade_closed(db_path, trade_id, close_price, close_reason, close_ts, pnl, fees=None):
     with _conn(db_path) as conn:
         # AND status='open' guard prevents double-close race (manager + web button)
         # from overwriting close data and double-counting P&L.
         cur = conn.execute(
-            "UPDATE futures_trades SET close_price=?,close_ts=?,close_reason=?,status='closed',pnl=? "
+            "UPDATE futures_trades SET close_price=?,close_ts=?,close_reason=?,status='closed',pnl=?,fees=? "
             "WHERE id=? AND status='open'",
-            (close_price, close_ts, close_reason, pnl, trade_id),
+            (close_price, close_ts, close_reason, pnl, fees, trade_id),
         )
         if cur.rowcount == 0:
             raise ValueError(f"No OPEN futures trade with id={trade_id} (already closed?)")

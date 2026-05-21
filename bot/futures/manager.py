@@ -72,7 +72,7 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
                         update_trade_closed(db_path, trade['id'],
                                             close_price=fill['price'], close_reason='broker_stop',
                                             close_ts=datetime.now(timezone.utc).isoformat(),
-                                            pnl=fill['pnl'])
+                                            pnl=fill['pnl'], fees=fill.get('fees'))
                         log.info('Reconciled %s id=%s — broker closed @ %.2f pnl=$%.2f fees=$%.2f',
                                  symbol, trade['id'], fill['price'], fill['pnl'], fill.get('fees', 0.0))
                         notifier.notify_exit(symbol, direction, fill['pnl'], 'broker_stop',
