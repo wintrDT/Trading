@@ -986,11 +986,17 @@ class TopstepXClient:
                 raise RuntimeError(f'closeContract HTTP {resp.status_code}: {resp.text[:200]}')
             data = resp.json()
             if data.get('success') is False:
-                # errorCode for "no position" is benign — treat as already flat
                 err = (data.get('errorMessage') or '').lower()
                 if 'no position' in err or 'not found' in err:
                     return True
-                raise RuntimeError(f'closeContract rejected: {data.get("errorMessage")}')
+                # Empty/unknown error — confirm whether a position actually remains.
+                # A flat account (e.g. broker stop already filled, or a reset) returns
+                # success=False with no message; that's "already closed", not a failure.
+                pos = self.get_open_position(symbol)
+                if not pos or pos.get('size', 0) == 0:
+                    log.info('TopstepX closeContract success=False but %s is flat — treating as closed', symbol)
+                    return True
+                raise RuntimeError(f'closeContract rejected: {data.get("errorMessage")!r}')
             return True
 
     def get_close_fill(self, symbol: str, since_iso: str, retries: int = 5, delay: float = 0.4) -> dict | None:

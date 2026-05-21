@@ -205,10 +205,13 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
 
         # Read the ACTUAL closing fill from TopStep — exit price slips past the
         # quote that tripped the exit, and TopStep's realized P&L is authoritative.
-        # Fall back to the local estimate if the fill can't be read.
+        # Look back to the trade's ENTRY so we find the real fill even if the broker
+        # stop already closed it earlier (otherwise we'd record a fantasy quote-based
+        # P&L). Fall back to the local estimate only if no fill can be read.
         if hasattr(client, 'get_close_fill'):
+            fill_since = (trade.get('entry_ts') or close_req_iso).replace('+00:00', 'Z')
             try:
-                fill = client.get_close_fill(trade['symbol'], close_req_iso)
+                fill = client.get_close_fill(trade['symbol'], fill_since)
             except Exception:
                 fill = None
             if fill:
