@@ -124,6 +124,13 @@ ENABLE_EXHAUSTION_FADE = True
 # stop + synthetic target + reconciliation remain the safe default. The manager's
 # reconciliation cancels any leftover bracket order as a backstop.
 ENABLE_BRACKET_ORDERS = False
+
+# Scale-out: on a 2+ contract trade, close half partway to target and move the rest
+# to breakeven (lock partial profit, let the runner run). Only applies to ES (NQ is
+# capped at 1 contract). DEFAULT OFF — opt-in. Partial-fill P&L is accounted for so
+# the trade's total still matches TopStep (no double-counting).
+ENABLE_SCALE_OUT = False
+SCALE_OUT_AT     = 0.5    # fraction of the way to target at which to scale out half
 EXH_FADE_LOOKBACK_BARS  = 20     # bars defining the "fresh extreme" window
 EXH_FADE_VOL_MULT       = 0.7    # extreme bar volume must be < this * 20-bar avg volume
 EXH_FADE_MIN_DEV_PCT    = 0.10   # price must be at least this % from VWAP to fade

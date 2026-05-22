@@ -1,8 +1,9 @@
 # bot/futures/manager.py
 import logging
 from datetime import datetime, timezone
-from bot.futures.config import RISK_RULES, TICK_INFO
-from bot.futures.db import get_open_trades, update_trade_price, update_trade_extremes, update_trade_closed
+from bot.futures.config import RISK_RULES, TICK_INFO, ENABLE_SCALE_OUT, SCALE_OUT_AT
+from bot.futures.db import (get_open_trades, update_trade_price, update_trade_extremes,
+                            update_trade_closed, update_trade_scaleout)
 from bot.futures.risk import should_exit, calc_breakeven_stop, calc_trailing_stop
 from bot.futures.trader import close_trade
 from bot.futures import notifier
@@ -118,6 +119,38 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
                                   trade.get('stop_order_id'), trade['id'])
         else:
             update_trade_price(db_path, trade['id'], current_price)
+
+        # Scale-out: on a 2+ contract live trade, close half partway to target and move
+        # the runner to breakeven. Partial P&L is stored (scaled_pnl) and scaled_ts is set
+        # so the final close only counts the remainder fill — no double-count.
+        if (ENABLE_SCALE_OUT and not sim and not trade.get('scaled')
+                and trade['contracts'] >= 2
+                and trade.get('order_id') not in ('SIM', 'UNKNOWN', None)
+                and hasattr(client, 'partial_close_position') and hasattr(client, 'get_close_fill')):
+            scale_at = entry + (target - entry) * SCALE_OUT_AT
+            reached = (current_price >= scale_at) if direction == 'long' else (current_price <= scale_at)
+            if reached:
+                close_size = trade['contracts'] // 2
+                try:
+                    client.partial_close_position(symbol, close_size)
+                    entry_iso = (trade.get('entry_ts') or '').replace('+00:00', 'Z')
+                    fill = client.get_close_fill(symbol, entry_iso, retries=2) if entry_iso else None
+                    part_pnl = float(fill['pnl']) if fill else 0.0
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    remaining = trade['contracts'] - close_size
+                    update_trade_scaleout(db_path, trade['id'], remaining, entry, part_pnl, now_iso)
+                    trade = {**trade, 'contracts': remaining, 'stop_price': entry,
+                             'scaled': 1, 'scaled_pnl': part_pnl, 'scaled_ts': now_iso}
+                    stop = entry  # remainder runs at breakeven
+                    log.info('Scaled out %s id=%s: closed %d, part_pnl=$%.2f, %d runner @ breakeven',
+                             symbol, trade['id'], close_size, part_pnl, remaining)
+                    if trade.get('stop_order_id') and hasattr(client, 'modify_order'):
+                        try:
+                            client.modify_order(trade['stop_order_id'], stop_price=entry, size=remaining)
+                        except Exception:
+                            pass
+                except Exception:
+                    log.exception('Scale-out failed for %s id=%s', symbol, trade['id'])
 
         reason = should_exit(trade['direction'], current_price, stop, target)
 

@@ -224,14 +224,16 @@ def close_trade(client, db_path, trade, current_price, reason, sim=False):
         # stop already closed it earlier (otherwise we'd record a fantasy quote-based
         # P&L). Fall back to the local estimate only if no fill can be read.
         if hasattr(client, 'get_close_fill'):
-            fill_since = (trade.get('entry_ts') or close_req_iso).replace('+00:00', 'Z')
+            # If the trade was scaled out, only count fills AFTER the scale-out (the
+            # runner) — the partial's P&L is already captured in scaled_pnl.
+            fill_since = (trade.get('scaled_ts') or trade.get('entry_ts') or close_req_iso).replace('+00:00', 'Z')
             try:
                 fill = client.get_close_fill(trade['symbol'], fill_since)
             except Exception:
                 fill = None
             if fill:
                 close_price = fill['price']
-                pnl         = fill['pnl']
+                pnl         = fill['pnl'] + float(trade.get('scaled_pnl') or 0)  # runner + scaled partial
                 fees        = fill.get('fees')
                 log.info('%s actual close fill %.2f pnl=$%.2f (quote was %.2f, est pnl=$%.2f, fees=$%.2f)',
                          trade['symbol'], close_price, pnl, current_price,

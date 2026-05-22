@@ -119,6 +119,12 @@ def init_db(db_path):
             conn.execute("ALTER TABLE futures_trades ADD COLUMN target_order_id TEXT")
         if 'fees' not in trade_cols:
             conn.execute("ALTER TABLE futures_trades ADD COLUMN fees REAL")
+        if 'scaled' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN scaled INTEGER DEFAULT 0")
+        if 'scaled_pnl' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN scaled_pnl REAL")
+        if 'scaled_ts' not in trade_cols:
+            conn.execute("ALTER TABLE futures_trades ADD COLUMN scaled_ts TEXT")
 
 
 def get_setting(db_path, key, default=None):
@@ -204,6 +210,18 @@ def mark_signal_traded(db_path, signal_id):
         cur = conn.execute("UPDATE futures_signals SET traded=1 WHERE id=?", (signal_id,))
         if cur.rowcount == 0:
             raise ValueError(f"No futures signal with id={signal_id}")
+
+
+def update_trade_scaleout(db_path, trade_id, new_contracts, new_stop, scaled_pnl, scaled_ts):
+    """Record a scale-out: reduce remaining contracts, move stop to breakeven, and
+    store the realized P&L + timestamp of the partial. The final close adds scaled_pnl
+    and reads fills only AFTER scaled_ts (so the partial isn't double-counted)."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "UPDATE futures_trades SET contracts=?, stop_price=?, scaled=1, scaled_pnl=?, scaled_ts=? "
+            "WHERE id=? AND status='open'",
+            (int(new_contracts), new_stop, scaled_pnl, scaled_ts, trade_id),
+        )
 
 
 def get_open_trades(db_path):

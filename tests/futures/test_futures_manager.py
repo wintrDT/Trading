@@ -43,6 +43,29 @@ def test_reconciles_broker_stop_fill(tmp_db):
     client.get_close_fill.assert_called()
 
 
+def test_scale_out_partial_close(tmp_db, monkeypatch):
+    import bot.futures.manager as mgr
+    monkeypatch.setattr(mgr, 'ENABLE_SCALE_OUT', True)
+    monkeypatch.setattr(mgr, 'SCALE_OUT_AT', 0.5)
+    tid = insert_trade(tmp_db, {
+        'symbol': 'ES', 'strategy': 'vwap', 'direction': 'long',
+        'entry_price': 5000.0, 'entry_ts': '2026-01-01T10:00:00',
+        'stop_price': 4998.0, 'target_price': 5004.0,   # halfway = 5002
+        'contracts': 2, 'order_id': 'LIVE1', 'status': 'open', 'stop_order_id': 'STOP1',
+    })
+    client = MagicMock()
+    client.get_open_position.return_value = {'size': 2, 'side': 'long', 'avgPrice': 5000.0}
+    client.get_close_fill.return_value = {'price': 5002.0, 'pnl': 100.0, 'fees': 1.9, 'size': 1}
+    # price at the halfway point (5002) -> scale out half
+    manage_futures_positions(client, tmp_db, current_prices={'ES': 5002.0}, sim=False)
+    client.partial_close_position.assert_called_once()        # closed half
+    t = get_open_trades(tmp_db)[0]
+    assert t['contracts'] == 1            # one runner left
+    assert t['scaled'] == 1
+    assert t['scaled_pnl'] == 100.0       # partial profit captured
+    assert float(t['stop_price']) == 5000.0   # runner moved to breakeven
+
+
 def test_trails_broker_stop_server_side(tmp_db):
     # Live long with a resting broker stop; price advances enough to trail -> the bot
     # should modify the resting broker stop (not just the DB), and keep the trade open.
