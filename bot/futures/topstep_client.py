@@ -483,6 +483,14 @@ _TOPSTEPX_SEARCH = {
     'ES': 'ESM6',   # E-mini S&P 500 — June 2026 front-month (TopStep uses 1-digit year)
     'NQ': 'NQM6',   # E-mini Nasdaq-100 — June 2026 front-month
 }
+# Stable symbolId roots (no month) for the auto front-month fallback. If the
+# hardcoded search above goes stale at quarterly rollover, the bot finds the active
+# front-month by root via Contract/available — no manual update / trading outage.
+_SYMBOL_ROOT = {
+    'ES': 'F.US.EP',
+    'NQ': 'F.US.ENQ',
+    'GC': 'F.US.GC',
+}
 # Quarterly rollover reminder:
 #   March  -> H (e.g. ESH6, NQH6)
 #   June   -> M (current: ESM6, NQM6)
@@ -564,9 +572,15 @@ class TopstepXClient:
                 log.error('TopstepX: %s', self._last_error)
                 return False
 
-            # Resolve front-month contract id for each symbol in our universe
+            # Resolve front-month contract id for each symbol in our universe.
+            # Primary: the hardcoded search text. Fallback: auto-find by symbolId root
+            # via Contract/available (handles quarterly rollover when the code is stale).
             for symbol, search_text in _TOPSTEPX_SEARCH.items():
                 contract_id = self._resolve_contract(search_text)
+                if not contract_id and symbol in _SYMBOL_ROOT:
+                    log.warning('TopstepX: %s search %r failed — trying auto front-month by root',
+                                symbol, search_text)
+                    contract_id = self._resolve_contract_by_root(_SYMBOL_ROOT[symbol])
                 if contract_id:
                     self._contracts[symbol] = contract_id
                     log.info('TopstepX: resolved %s -> %s', symbol, contract_id)
@@ -732,6 +746,36 @@ class TopstepXClient:
             except Exception:
                 log.exception('TopstepX contract resolution failed for %s (live=%s)', search_text, live_flag)
                 continue
+        return None
+
+    def _resolve_contract_by_root(self, root: str) -> str | None:
+        """Fallback front-month resolver via Contract/available — robust to quarterly
+        rollover (no hardcoded month code). Matches the full-size E-mini symbolId root
+        exactly (e.g. F.US.EP, not the Micro F.US.MES) and prefers the active contract.
+        """
+        for live_flag in (False, True):
+            try:
+                with self._lock:
+                    resp = self._http.post('/api/Contract/available', json={'live': live_flag})
+                if resp.status_code != 200:
+                    continue
+                payload = resp.json()
+                contracts = payload.get('contracts', []) if isinstance(payload, dict) else payload
+            except Exception:
+                log.exception('Contract/available failed (live=%s)', live_flag)
+                continue
+            if not contracts:
+                continue
+            matches = [c for c in contracts if (c.get('symbolId') or '').upper() == root.upper()]
+            if not matches:
+                continue
+            active = [c for c in matches if c.get('activeContract')]
+            cands = active if active else matches
+            cands.sort(key=lambda c: str(c.get('expirationDate') or c.get('expiry') or c.get('name') or ''))
+            pick = cands[0]
+            if pick.get('id') is not None:
+                log.info('Auto front-month for %s -> %s (%s)', root, pick['id'], pick.get('name'))
+                return str(pick['id'])
         return None
 
     # ------------------------------------------------------------------ #
