@@ -8,7 +8,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from bot.futures.config import (
-    FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES,
+    FUTURES_DB_PATH, SYMBOLS, TICK_INFO, STRATEGY_PARAMS, RISK_RULES, SCAN_INTERVAL_SEC,
     TIMEZONE, MARKET_CLOSE_HOUR, MARKET_OPEN_HOUR, ORB_START, ORB_END,
     AV_API_KEY, SYMBOL_VWAP_PCT, SYMBOL_NEWS_KEYWORDS, BLOCKED_HOURS_ET,
     TOPSTEP_RULES, SYMBOL_MAX_CONTRACTS,
@@ -1046,7 +1046,7 @@ def main():
     def _backtest(): job_backtest(client)
 
     scheduler = BlockingScheduler(timezone=ET)
-    scheduler.add_job(_scan,     IntervalTrigger(seconds=10, timezone=ET), id='scan')
+    scheduler.add_job(_scan,     IntervalTrigger(seconds=SCAN_INTERVAL_SEC, timezone=ET), id='scan')
     scheduler.add_job(_manage,   IntervalTrigger(seconds=5, timezone=ET), id='manage')
     # Snapshot every hour during active session (6 PM – 5 PM next day, skip 5–6 PM window)
     scheduler.add_job(_snapshot, CronTrigger(hour='0-16,18-23', minute=0, timezone=ET), id='snapshot')

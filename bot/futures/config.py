@@ -19,6 +19,14 @@ STRATEGY_PARAMS = {
     'orb_min_range_ticks': 8,
 }
 
+# Scan cadence (seconds). Prices come from the sub-second SignalR stream, so the bot
+# can scan fast without hammering the API. Set to 2s for fastest practical reaction.
+# Trade-off: the reversion trigger uses bar-based real VWAP (unaffected), but per-scan
+# filters (SMA-trend, RSI, regime counter, exhaustion lookback) count SCANS, so they
+# span less wall-clock time at a faster rate -> twitchier, more entries. Raise back to
+# 10 for the original, calmer behavior.
+SCAN_INTERVAL_SEC = 2
+
 # Per-symbol VWAP thresholds — tuned to each instrument's volatility
 SYMBOL_VWAP_PCT = {
     'ES': 0.05,   # S&P — ~4 pts deviation needed
