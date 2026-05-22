@@ -687,13 +687,19 @@ def job_scan(client):
 
         orb_hi = orb_state.high if orb_state._ready and orb_state.high != float('-inf') else None
         orb_lo = orb_state.low  if orb_state._ready and orb_state.low  != float('inf')  else None
-        # Order flow (cumulative volume delta) + session reference levels for the dashboard
+        # Order flow (cumulative volume delta + book imbalance) + reference levels for the dashboard
         cvd = None
+        imbalance = None
         if client is not None and hasattr(client, 'get_order_flow'):
             try:
                 cvd = client.get_order_flow(symbol, 60)
             except Exception:
                 cvd = None
+        if client is not None and hasattr(client, 'get_book_imbalance'):
+            try:
+                imbalance = client.get_book_imbalance(symbol)
+            except Exception:
+                imbalance = None
         if symbol not in _ref_levels_cache and client is not None and hasattr(client, 'get_bars'):
             try:
                 from bot.futures.levels import compute_reference_levels
@@ -711,6 +717,7 @@ def job_scan(client):
             'price':      price,
             'vwap':       round(vwap, 2) if vwap else None,
             'cvd':        round(cvd) if cvd is not None else None,
+            'imbalance':  imbalance,
             'levels':     levels,
             'halted':     dd_halted,
             'dev_pct':    dev_pct,

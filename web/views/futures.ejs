@@ -451,11 +451,17 @@
               <span style="color:var(--text2);">RSI <span style="color:<%= s.rsi != null && s.rsi > 70 ? '#f5a623' : s.rsi != null && s.rsi < 30 ? '#f5a623' : 'var(--text)' %>;font-weight:600;"><%= s.rsi != null ? s.rsi.toFixed(0) : '—' %></span></span>
               <span style="color:var(--text2);">Trend <span style="color:<%= trendColor %>;font-weight:600;"><%= trendArrow %> <%= s.trend || '—' %></span></span>
             </div>
-            <!-- Order flow (cumulative volume delta, 60s) -->
+            <!-- Order flow: cumulative volume delta (60s) + top-of-book imbalance -->
             <% if (s.cvd != null) { const cvdColor = s.cvd > 0 ? '#00d4a0' : s.cvd < 0 ? '#ff4f4f' : 'var(--text2)'; %>
             <div style="margin-top:0.4rem;font-size:0.72rem;color:var(--text2);">
               Order flow <span style="color:<%= cvdColor %>;font-weight:700;font-family:'Space Mono',monospace;"><%= s.cvd > 0 ? '+' : '' %><%= s.cvd %></span>
               <span style="color:<%= cvdColor %>;"><%= s.cvd > 0 ? '▲ buying' : s.cvd < 0 ? '▼ selling' : '— flat' %></span>
+            </div>
+            <% } %>
+            <% if (s.imbalance != null) { const ic = s.imbalance > 0.15 ? '#00d4a0' : s.imbalance < -0.15 ? '#ff4f4f' : 'var(--text2)'; %>
+            <div style="margin-top:0.2rem;font-size:0.72rem;color:var(--text2);">
+              Book imbalance <span style="color:<%= ic %>;font-weight:700;font-family:'Space Mono',monospace;"><%= s.imbalance > 0 ? '+' : '' %><%= (s.imbalance*100).toFixed(0) %>%</span>
+              <span style="color:<%= ic %>;"><%= s.imbalance > 0.15 ? 'bid-heavy' : s.imbalance < -0.15 ? 'ask-heavy' : 'balanced' %></span>
             </div>
             <% } %>
             <!-- Session reference levels -->

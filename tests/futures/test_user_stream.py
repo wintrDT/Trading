@@ -22,6 +22,20 @@ def test_cvd_zero_when_no_trades():
     assert ms.cvd('NONE') == 0.0
 
 
+def test_book_imbalance_from_depth():
+    ms = TopstepXMarketStream(get_token=lambda: 't')
+    # type 4 = BestBid size, type 3 = BestAsk size (confirmed live)
+    ms._on_depth(['C1', [{'type': 4, 'price': 100.0, 'volume': 30},
+                         {'type': 3, 'price': 100.25, 'volume': 10}]])
+    # (30 - 10) / 40 = 0.5 -> buy pressure
+    assert ms.book_imbalance('C1') == 0.5
+
+
+def test_book_imbalance_none_without_book():
+    ms = TopstepXMarketStream(get_token=lambda: 't')
+    assert ms.book_imbalance('NONE') is None
+
+
 def _stream():
     return TopstepXUserStream(get_token=lambda: 'tok', account_id=123)
 

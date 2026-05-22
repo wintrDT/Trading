@@ -49,6 +49,7 @@ class TopstepXMarketStream:
         self._quotes     = {}          # contractId -> last price float
         self._bbo        = {}          # contractId -> (bestBid, bestAsk) for trade classification
         self._cvd        = {}          # contractId -> deque[(epoch, signed_volume)] rolling order flow
+        self._book       = {}          # contractId -> {'bid_vol','ask_vol'} top-of-book sizes (DOM)
         self._connection = None
         self._connected  = False
         self._subscribed = set()       # contract ids we want subscribed
@@ -84,6 +85,9 @@ class TopstepXMarketStream:
             # Time & sales → cumulative volume delta (order flow)
             for event in ('GatewayTrade', 'Trade', 'OnTrade'):
                 self._connection.on(event, self._on_trade)
+            # Market depth (DOM) → top-of-book bid/ask imbalance
+            for event in ('GatewayDepth', 'Depth', 'OnDepth'):
+                self._connection.on(event, self._on_depth)
 
             self._connection.on_open(self._on_open)
             self._connection.on_close(self._on_close)
@@ -210,6 +214,43 @@ class TopstepXMarketStream:
                 return 0.0
             return float(sum(v for ts, v in dq if ts >= cutoff))
 
+    def _on_depth(self, args):
+        """DOM handler -> top-of-book sizes. ProjectX DomType: 3=BestAsk, 4=BestBid
+        (confirmed live; 5=Trade handled via CVD). Tracks the latest best bid/ask size."""
+        try:
+            contract_id = None
+            levels = None
+            if isinstance(args, list) and len(args) >= 2:
+                contract_id = str(args[0]); levels = args[1]
+            if isinstance(levels, dict):
+                levels = [levels]
+            if not (contract_id and isinstance(levels, list)):
+                return
+            with self._lock:
+                bk = self._book.setdefault(contract_id, {'bid_vol': 0.0, 'ask_vol': 0.0})
+                for e in levels:
+                    if not isinstance(e, dict):
+                        continue
+                    t = e.get('type')
+                    if t == 4:
+                        bk['bid_vol'] = float(e.get('volume', 0) or 0)
+                    elif t == 3:
+                        bk['ask_vol'] = float(e.get('volume', 0) or 0)
+        except Exception:
+            log.exception('TopstepX depth handler error')
+
+    def book_imbalance(self, contract_id: str):
+        """Top-of-book imbalance (bid_vol - ask_vol) / (bid_vol + ask_vol) in [-1, 1].
+        Positive = more resting bid size (buy pressure). None if no book yet."""
+        with self._lock:
+            bk = self._book.get(str(contract_id))
+        if not bk:
+            return None
+        tot = bk['bid_vol'] + bk['ask_vol']
+        if tot <= 0:
+            return None
+        return round((bk['bid_vol'] - bk['ask_vol']) / tot, 3)
+
     def subscribe(self, contract_id: str):
         with self._lock:
             self._subscribed.add(contract_id)
@@ -232,6 +273,11 @@ class TopstepXMarketStream:
         # Time & sales for order flow (best-effort; not all plans serve it)
         try:
             self._connection.send('SubscribeContractTrades', [contract_id])
+        except Exception:
+            pass
+        # Market depth (DOM) for top-of-book imbalance (best-effort)
+        try:
+            self._connection.send('SubscribeContractMarketDepth', [contract_id])
         except Exception:
             pass
 
@@ -613,6 +659,15 @@ class TopstepXClient:
         if not cid:
             return None
         return self._stream.cvd(cid, window_sec)
+
+    def get_book_imbalance(self, symbol: str):
+        """Top-of-book bid/ask imbalance for `symbol` in [-1,1] (+ = buy pressure)."""
+        if not self._stream:
+            return None
+        cid = self._contracts.get(symbol)
+        if not cid:
+            return None
+        return self._stream.book_imbalance(cid)
 
     def _ensure_token(self):
         """Refresh the session token if it's near expiry."""
