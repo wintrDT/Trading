@@ -101,7 +101,10 @@ SYMBOL_MAX_CONTRACTS = {
     'NQ': 1,
 }
 
-ENABLE_TREND_STRATEGY = True
+# QUARANTINED 2026-05-22: re-disabled after it resumed trading and lost again
+# (trend longs chopped overnight; backtest expectancy -$71/trade). The reversion
+# (vwap) engine is what's net-positive. Flip to True only with a proven edge.
+ENABLE_TREND_STRATEGY = False
 
 # Real volume-weighted VWAP. When True, VWAP is rebuilt each ~60s from 1-min bar
 # volume (the institutional anchor) instead of an unweighted price average fed
