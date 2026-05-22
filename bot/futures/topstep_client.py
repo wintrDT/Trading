@@ -935,6 +935,67 @@ class TopstepXClient:
                 raise RuntimeError(f'TopstepX target order placed but no orderId: {data}')
             return {'orderId': str(order_id)}
 
+    def modify_order(self, order_id, stop_price=None, limit_price=None, size=None) -> bool:
+        """Modify a working order in place — used to trail the resting protective stop
+        server-side (move stopPrice as price advances). Returns True on success."""
+        if not self._connected or not order_id:
+            return False
+        self._ensure_token()
+        body = {'accountId': self.account_id, 'orderId': int(order_id)}
+        if stop_price is not None:
+            body['stopPrice'] = round(float(stop_price), 2)
+        if limit_price is not None:
+            body['limitPrice'] = round(float(limit_price), 2)
+        if size is not None:
+            body['size'] = int(size)
+        try:
+            with self._lock:
+                resp = self._http.post('/api/Order/modify', json=body)
+            if resp.status_code != 200:
+                log.info('TopstepX modify_order %s -> HTTP %s', order_id, resp.status_code)
+                return False
+            return resp.json().get('success') is not False
+        except Exception:
+            log.exception('TopstepX modify_order %s failed', order_id)
+            return False
+
+    def search_open_orders(self) -> list:
+        """All working orders for the account — used to find/cancel orphans."""
+        if not self._connected:
+            return []
+        self._ensure_token()
+        try:
+            with self._lock:
+                resp = self._http.post('/api/Order/searchOpen', json={'accountId': self.account_id})
+            if resp.status_code != 200:
+                return []
+            payload = resp.json()
+            return payload.get('orders', []) if isinstance(payload, dict) else (payload or [])
+        except Exception:
+            log.exception('TopstepX search_open_orders failed')
+            return []
+
+    def partial_close_position(self, symbol: str, size: int) -> bool:
+        """Close `size` contracts of the open position (scale-out). Returns True on success."""
+        if not self._connected:
+            raise RuntimeError('TopstepX not connected')
+        self._ensure_token()
+        contract_id = self._contracts.get(symbol)
+        if not contract_id:
+            return True  # nothing to close
+        with self._lock:
+            resp = self._http.post('/api/Position/partialCloseContract',
+                                   json={'accountId': self.account_id, 'contractId': contract_id, 'size': int(size)})
+            if resp.status_code != 200:
+                raise RuntimeError(f'partialCloseContract HTTP {resp.status_code}: {resp.text[:200]}')
+            data = resp.json()
+            if data.get('success') is False:
+                err = (data.get('errorMessage') or '').lower()
+                if 'no position' in err or 'not found' in err:
+                    return True
+                raise RuntimeError(f'partialClose rejected: {data.get("errorMessage")!r}')
+            return True
+
     def cancel_order(self, order_id) -> bool:
         """Cancel a working order (e.g. the resting protective stop) by id.
 

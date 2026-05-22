@@ -43,6 +43,23 @@ def test_reconciles_broker_stop_fill(tmp_db):
     client.get_close_fill.assert_called()
 
 
+def test_trails_broker_stop_server_side(tmp_db):
+    # Live long with a resting broker stop; price advances enough to trail -> the bot
+    # should modify the resting broker stop (not just the DB), and keep the trade open.
+    insert_trade(tmp_db, {
+        'symbol': 'ES', 'strategy': 'vwap', 'direction': 'long',
+        'entry_price': 5000.0, 'entry_ts': '2026-01-01T10:00:00',
+        'stop_price': 4998.0, 'target_price': 5010.0,
+        'contracts': 1, 'order_id': 'LIVE1', 'status': 'open',
+        'stop_order_id': 'STOP1',
+    })
+    client = MagicMock()
+    client.get_open_position.return_value = {'size': 1, 'side': 'long', 'avgPrice': 5000.0}  # not flat -> no reconcile
+    manage_futures_positions(client, tmp_db, current_prices={'ES': 5003.0}, sim=False)
+    client.modify_order.assert_called()                # broker stop trailed server-side
+    assert len(get_open_trades(tmp_db)) == 1           # still open (price below target, above trailed stop)
+
+
 def test_no_false_reconcile_when_no_fill(tmp_db):
     # Broker reports flat (could be a transient API blip) but NO closing fill exists
     # -> do NOT close the trade (guards against false-flat readings).

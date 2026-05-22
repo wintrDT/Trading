@@ -108,6 +108,14 @@ def manage_futures_positions(client, db_path, current_prices: dict, sim=False):
             trade = {**trade, 'stop_price': stop}
             update_trade_price(db_path, trade['id'], current_price, new_stop=stop)
             log.info('Stop trailed to %.2f for %s trade id=%s', stop, symbol, trade['id'])
+            # Trail the RESTING broker stop server-side too — so a fast reversal fills
+            # at the trailed level instantly, not on the next 5s synthetic cycle.
+            if not sim and trade.get('stop_order_id') and hasattr(client, 'modify_order'):
+                try:
+                    client.modify_order(trade['stop_order_id'], stop_price=stop)
+                except Exception:
+                    log.exception('Failed to trail broker stop %s for id=%s',
+                                  trade.get('stop_order_id'), trade['id'])
         else:
             update_trade_price(db_path, trade['id'], current_price)
 

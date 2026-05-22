@@ -838,8 +838,41 @@ def job_manage(client):
         prices = get_yf_prices(SYMBOLS, tradovate_client=client)
         sim = get_setting(FUTURES_DB_PATH, 'trading_mode', 'sim') == 'sim'
         manage_futures_positions(client, FUTURES_DB_PATH, current_prices=prices, sim=sim)
+        if not sim:
+            _cancel_orphan_orders(client)
     except Exception:
         log.exception('Manager error')
+
+
+def _cancel_orphan_orders(client):
+    """Cancel resting broker orders that don't belong to any open bot trade.
+
+    A leftover stop/target (e.g. after a manual close or a missed reconciliation) can
+    fill later and open an unwanted position. We cancel any working order whose id
+    isn't a stop/target of a currently-open trade.
+    """
+    if not (hasattr(client, 'search_open_orders') and hasattr(client, 'cancel_order')):
+        return
+    try:
+        working = client.search_open_orders()
+    except Exception:
+        return
+    if not working:
+        return
+    from bot.futures.db import get_open_trades
+    known = set()
+    for t in get_open_trades(FUTURES_DB_PATH):
+        for key in ('stop_order_id', 'target_order_id'):
+            if t.get(key):
+                known.add(str(t[key]))
+    for o in working:
+        oid = str(o.get('id') or o.get('orderId') or '')
+        if oid and oid not in known:
+            log.warning('Cancelling orphan working order %s (not tied to an open trade)', oid)
+            try:
+                client.cancel_order(oid)
+            except Exception:
+                pass
 
 
 def job_snapshot(client):
